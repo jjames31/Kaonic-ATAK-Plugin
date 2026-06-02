@@ -1,0 +1,16 @@
+[Unit]
+Description=Kaonic ATAK Interface
+After=network-online.target kaonic-commd.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+Environment="KAONIC_GATEWAY_DB_PATH=/kaonic-gateway.db"
+ExecStart=/usr/bin/kaonic-atak-interface --rns-module 0
+Restart=always
+RestartSec=3
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target
