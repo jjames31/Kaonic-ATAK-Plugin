@@ -22,6 +22,7 @@ pub struct InterfaceSelection {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum InterfaceSelectionError {
     NoUsableInterfaces,
+    NoAutomaticAtakInterface,
     InterfaceNotFound(String),
     AddressNotFound(Ipv4Addr),
     AmbiguousInterface(String),
@@ -31,6 +32,10 @@ impl fmt::Display for InterfaceSelectionError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::NoUsableInterfaces => write!(f, "no non-loopback IPv4 interfaces found"),
+            Self::NoAutomaticAtakInterface => write!(
+                f,
+                "no unambiguous 192.168.10.0/24 ATAK interface found; configure KAONIC_ATAK_INTERFACE_IP or --local-address explicitly"
+            ),
             Self::InterfaceNotFound(name) => write!(f, "interface '{name}' was not found"),
             Self::AddressNotFound(addr) => write!(f, "local address {addr} was not found"),
             Self::AmbiguousInterface(detail) => {
@@ -109,18 +114,14 @@ fn auto_detect(
         .cloned()
         .collect::<Vec<_>>();
 
-    if kaonic_lan.len() == 1 {
-        return Ok(to_local_interface(&kaonic_lan[0]));
-    }
-
-    if kaonic_lan.len() > 1 {
-        return Err(InterfaceSelectionError::AmbiguousInterface(format!(
+    match kaonic_lan.as_slice() {
+        [candidate] => Ok(to_local_interface(candidate)),
+        [] => Err(InterfaceSelectionError::NoAutomaticAtakInterface),
+        _ => Err(InterfaceSelectionError::AmbiguousInterface(format!(
             "multiple 192.168.10.0/24 candidates: {}",
             describe_candidates(&kaonic_lan)
-        )));
+        ))),
     }
-
-    one_candidate(candidates, "auto-detected non-loopback IPv4 interface")
 }
 
 fn one_candidate(
@@ -189,6 +190,20 @@ mod tests {
     }
 
     #[test]
+    fn explicit_non_default_address_is_permitted() {
+        let candidates = vec![candidate("eth0", [10, 1, 2, 3])];
+        let selected = select_local_interface(
+            &candidates,
+            &InterfaceSelection {
+                interface_name: None,
+                local_addr: Some(Ipv4Addr::new(10, 1, 2, 3)),
+            },
+        )
+        .expect("explicit address is safe");
+        assert_eq!(selected.name, "eth0");
+    }
+
+    #[test]
     fn auto_detect_prefers_single_kaonic_lan_candidate() {
         let candidates = vec![
             candidate("eth0", [10, 0, 0, 2]),
@@ -199,6 +214,15 @@ mod tests {
             .expect("selected interface");
 
         assert_eq!(selected.name, "usb0");
+    }
+
+    #[test]
+    fn auto_detect_refuses_unrelated_single_interface() {
+        let candidates = vec![candidate("eth0", [10, 0, 0, 2])];
+        assert_eq!(
+            select_local_interface(&candidates, &InterfaceSelection::default()).unwrap_err(),
+            InterfaceSelectionError::NoAutomaticAtakInterface
+        );
     }
 
     #[test]
