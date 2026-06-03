@@ -330,14 +330,12 @@ mod tests {
     #[test]
     fn bounds_location_records() {
         let state = LocationState::new(1, Duration::from_secs(60));
-        let first = parse_cot_payload(
-            br#"<event uid="one" type="a-f-G"><point lat="1" lon="1"/></event>"#,
-        )
-        .unwrap();
-        let second = parse_cot_payload(
-            br#"<event uid="two" type="a-f-G"><point lat="2" lon="2"/></event>"#,
-        )
-        .unwrap();
+        let first =
+            parse_cot_payload(br#"<event uid="one" type="a-f-G"><point lat="1" lon="1"/></event>"#)
+                .unwrap();
+        let second =
+            parse_cot_payload(br#"<event uid="two" type="a-f-G"><point lat="2" lon="2"/></event>"#)
+                .unwrap();
         state.record(PacketSource::LocalUdp, 6969, &first);
         state.record(PacketSource::LocalUdp, 6969, &second);
         assert_eq!(state.len(), 1);

@@ -236,7 +236,12 @@ fn configured_ipv4(
 
 fn env_flag_enabled(name: &str) -> bool {
     non_empty_env(name)
-        .map(|value| matches!(value.to_ascii_lowercase().as_str(), "1" | "true" | "yes" | "on"))
+        .map(|value| {
+            matches!(
+                value.to_ascii_lowercase().as_str(),
+                "1" | "true" | "yes" | "on"
+            )
+        })
         .unwrap_or(false)
 }
 
