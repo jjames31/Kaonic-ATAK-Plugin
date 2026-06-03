@@ -2,7 +2,7 @@
 name = "kaonic-atak-plugin"
 version = "0.1.1"
 authors = ["jjames31"]
-edition = "2021"
+edition = "2026"
 
 [[bin]]
 name = "kaonic-atak-plugin"
