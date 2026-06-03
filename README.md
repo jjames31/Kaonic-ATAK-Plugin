@@ -1,240 +1,153 @@
 # Kaonic ATAK Plugin
 
-A custom Kaonic-hosted interface for transporting ATAK Cursor-on-Target and
-GeoChat multicast traffic across the Kaonic Reticulum radio mesh.
+A custom Kaonic-hosted network adapter for transporting validated ATAK Cursor-on-Target (CoT) and GeoChat traffic across the Kaonic Reticulum radio mesh.
 
-This repository is separate from Beechat's upstream `kaonic-gateway`
-repository. It is intended to become a Kaonic-side plugin/service, not an
-Android ATAK APK plugin.
+This repository is separate from Beechat's upstream `kaonic-gateway` repository. It is a Kaonic-side plugin/service, not an Android ATAK APK plugin.
 
-## Project Status
+## Current Status
 
-This repository is in the design/baseline stage. The immediate goal is to
-document the known-good upstream ATAK bridge behavior before implementing the
-custom plugin in this repository.
+The repository contains a custom plugin implementation baseline with:
 
-| Capability                                      | Status      |
-| ----------------------------------------------- | ----------- |
-| Upstream ATAK bridge identified and reviewed    | Complete    |
-| Upstream bridge built for Kaonic ARMv7          | Complete    |
-| Upstream bridge installed on one Kaonic         | Complete    |
-| Local multicast ingress smoke test              | Passed      |
-| Forwarding into Reticulum path                  | Passed      |
-| Real ATAK phone traffic test                    | Pending     |
-| Two-Kaonic end-to-end radio test                | Pending     |
-| Custom plugin implementation in this repository | Implemented |
+- ATAK multicast-to-Reticulum and Reticulum-to-multicast bridging;
+- CoT XML validation and decoded location tracking;
+- interface-isolated multicast transmit behavior;
+- fail-closed automatic ATAK interface selection;
+- explicit opt-in compatibility forwarding for non-CoT payloads;
+- ARMv7 cross-build and Kaonic package scripts.
+
+Hardware validation still required:
+
+- real ATAK phone packet ingress;
+- two-Kaonic end-to-end radio delivery;
+- plugin ZIP installation and runtime test on the current Kaonic image after the safety changes.
+
+The upstream bridge was previously installed and smoke-tested on one Kaonic, but the current custom implementation must be rebuilt and revalidated before being considered deployable.
 
 ## Intended Architecture
 
 ```text
-ATAK Android Device
-        │
-        │ UDP multicast over local Kaonic network
-        ▼
+ATAK phone, tablet, or compatible network client
+        |
+        | UDP multicast on the selected ATAK-facing network
+        v
 Kaonic ATAK Plugin
-        │
-        │ Reticulum over Kaonic radio transport
-        ▼
+        |
+        | Reticulum over the Kaonic radio transport
+        v
 Remote Kaonic ATAK Plugin
-        │
-        │ UDP multicast over local Kaonic network
-        ▼
-Remote ATAK Android Device
+        |
+        | UDP multicast on its selected ATAK-facing network
+        v
+Remote ATAK phone, tablet, or compatible network client
 ```
 
-The plugin runs on the Kaonic device. It bridges local ATAK multicast traffic
-into the Kaonic Reticulum radio mesh and emits received remote traffic back
-onto the local ATAK multicast network.
+## Supported Network Traffic
 
-It is separate from any future Android ATAK UI plugin. A future Android-side
-plugin could be useful, but it is not part of this baseline repository scope.
+| Traffic type | Multicast group | Port | Purpose |
+| --- | ---: | ---: | --- |
+| SA / CoT | `239.2.3.1` | `6969` | Position, marker, and situational-awareness traffic |
+| GeoChat / CoT | `224.10.10.1` | `17012` | Chat-related ATAK traffic |
 
-## Baseline ATAK Traffic Channels
+The plugin forwards original packet bytes unchanged after validation. It parses location-bearing CoT events locally to track the latest known local and remote positions.
 
-| Traffic Type | Multicast Group |    Port | Purpose                                             |
-| ------------ | --------------: | ------: | --------------------------------------------------- |
-| SA / CoT     |     `239.2.3.1` |  `6969` | Position, marker, and situational-awareness traffic |
-| GeoChat      |   `224.10.10.1` | `17012` | Chat-related traffic                                |
+## Safety Model
 
-The custom plugin preserves these values while adding CoT validation and local
-interface isolation.
+Version 1 is a **network-only ATAK adapter**. It does not read from, configure, or control directly attached external hardware.
 
-## Upstream Reference Implementation
+It does not implement or automatically activate:
 
-The baseline reference implementation exists in the upstream repository at:
+- USB peripheral access;
+- UART or serial input;
+- external GPS/NMEA receivers;
+- drone or MAVLink interfaces;
+- GPIO, SPI, or I2C devices;
+- cameras, sensors, or accessory power-control behavior.
+
+A device connected to the Kaonic is relevant to this plugin only if it intentionally sends supported ATAK-compatible network traffic on the selected ATAK-facing network interface.
+
+### Safe forwarding mode
+
+Safe mode is the default. In this mode, only valid CoT XML event packets on the supported ATAK multicast channels are sent through Reticulum or emitted back onto the local ATAK network. Malformed XML and unrelated arbitrary UDP payloads are dropped.
+
+### Compatibility mode
+
+Opaque forwarding is available only through explicit opt-in configuration:
+
+```bash
+--allow-unvalidated-payloads
+```
+
+or:
+
+```bash
+KAONIC_ATAK_ALLOW_OPAQUE_FORWARDING=true
+```
+
+Compatibility mode may transport payloads that the plugin cannot verify as ATAK CoT. Use it only during controlled compatibility testing.
+
+## ATAK-Facing Interface Selection
+
+The plugin emits local multicast only on one selected ATAK-facing IPv4 interface. It does not retransmit onto every non-loopback interface.
+
+### Recommended explicit configuration
+
+Select the ATAK-facing address with either:
+
+```bash
+--local-address <IPv4>
+```
+
+or:
+
+```bash
+KAONIC_ATAK_INTERFACE_IP=<IPv4>
+```
+
+An interface name can also be constrained with:
+
+```bash
+--local-interface <name>
+```
+
+or:
+
+```bash
+KAONIC_ATAK_INTERFACE=<name>
+```
+
+CLI options override environment variables.
+
+### Automatic selection
+
+Without explicit configuration, the plugin will use the network interface only when exactly one non-loopback address is present on the expected Kaonic ATAK LAN subnet:
 
 ```text
-kaonic-atak-bridge/
+192.168.10.0/24
 ```
 
-Observed/source-confirmed responsibilities:
+When no such address exists, or selection is ambiguous, startup fails closed rather than transmitting onto an unrelated network interface. This behavior is deliberate when a Kaonic is attached to other hardware or networks.
 
-- Receive local ATAK multicast UDP traffic. Source: upstream
-  `kaonic-atak-bridge/src/main.rs`.
-- Forward received packets into Reticulum. Source: upstream
-  `kaonic-atak-bridge/src/main.rs`.
-- Advertise bridge destinations for supported ATAK channels. Source: upstream
-  `kaonic-atak-bridge/src/main.rs`.
-- Discover and link to compatible remote bridge destinations. Source: upstream
-  `kaonic-atak-bridge/src/main.rs`.
-- Forward remote Reticulum payloads back onto local ATAK multicast. Source:
-  upstream `kaonic-atak-bridge/src/main.rs`.
+## CoT Location Interpretation
 
-The upstream bridge package metadata and service definition are in:
+For valid CoT packets with a usable `<point>` element, the plugin extracts and tracks:
 
-```text
-kaonic-atak-bridge/Cargo.toml
-kaonic-atak-bridge/kaonic-plugin.toml
-kaonic-atak-bridge/kaonic-atak-bridge.service
-```
+- UID;
+- event type;
+- `how` method field when present;
+- callsign from `<detail><contact ...>` when present;
+- latitude and longitude;
+- optional HAE, CE, and LE values;
+- CoT time, start, and stale metadata when present.
 
-The Kaonic plugin installer behavior is implemented under:
+Valid CoT events without a location point are still forwardable; they simply do not create a location record.
 
-```text
-kaonic-installer/
-```
+The location store:
 
-## Current Verified Test Status
+- maintains local-to-mesh and mesh-to-local records separately;
+- is bounded to avoid unlimited UID growth;
+- removes records after a retention period.
 
-Known device context:
-
-```text
-Hardware tested: Kaonic 1S
-Device architecture: armv7l
-Fresh OS image tested: ST OpenSTLinux / Yocto, VERSION_ID=5.0.3-snapshot-20260411
-Observed Kaonic communication control endpoint: 192.168.10.1:9090
-Observed gateway database path: /kaonic-gateway.db
-```
-
-The upstream ATAK bridge was manually built, packaged, installed, and tested on
-one Kaonic device. Verified behavior:
-
-- Plugin installation through the Kaonic dashboard succeeded.
-- The bridge systemd service started successfully.
-- The bridge joined multicast groups `239.2.3.1:6969` and
-  `224.10.10.1:17012`.
-- Local multicast test packets from a connected computer were received by the
-  bridge.
-- Service logs showed `udp -> rns`, confirming local multicast ingress and
-  forwarding into the Reticulum path.
-
-Limitations:
-
-- End-to-end radio delivery has not been verified because only one Kaonic unit
-  was available.
-- Remote ATAK reception of position, markers, or chat has not been verified.
-- Reliability, bandwidth behavior, filtering, and field performance have not
-  been tested.
-- Real ATAK phone packet ingress remains pending unless separate verified test
-  results are added to this repository.
-
-## Upstream Background
-
-Verified timeline from the upstream `kaonic-gateway` git history:
-
-```text
-2026-03-18 — The ATAK bridge was first introduced in commit 24371ccb:
-             chore: add atak bridge over reticulum
-
-2026-03-18 — ATAK/Reticulum flow was corrected in commit d8ff138b:
-             feat: correct atak reticulum flow
-
-2026-04-11 — The prior bridge source was removed during the Leptos/gateway
-             refactor in commit 237182c8, while ATAK-related gateway UI rows
-             were added.
-
-2026-04-26 — The current standalone ATAK plugin/service was reintroduced in
-             commit e22746cd:
-             feat: add ldpc to reticulum interface
-```
-
-The tested fresh OS image is dated `20260411`. That explains why it contained
-ATAK-related gateway UI strings but did not contain the standalone
-`kaonic-atak-bridge.service` or active multicast listeners by default.
-
-## Runtime Requirements
-
-Currently known runtime requirements:
-
-- Kaonic 1S hardware.
-- ARMv7-compatible plugin binary.
-- `kaonic-commd.service` running.
-- `kaonic-gateway.service` available for gateway settings/database access.
-- Kaonic control endpoint reachable at `192.168.10.1:9090`.
-- Gateway database available at `/kaonic-gateway.db`.
-- ATAK phone or test client connected to the local Kaonic network.
-
-The custom service definition should explicitly set:
-
-```ini
-Environment="KAONIC_GATEWAY_DB_PATH=/kaonic-gateway.db"
-```
-
-This absolute path was verified on the tested device. The upstream bridge
-service definition did not explicitly set it.
-
-## Planned Plugin Package Structure
-
-The intended Kaonic installer ZIP baseline is:
-
-```text
-kaonic-atak-plugin.zip
-├── kaonic-plugin.toml
-├── kaonic-atak-plugin.service
-├── kaonic-atak-plugin
-└── kaonic-atak-plugin.sha256
-```
-
-This packaging structure is based on the successfully installed upstream bridge
-package and must be confirmed against `kaonic-installer/` before the first
-custom package is finalized.
-
-## Development Roadmap
-
-```text
-Stage 0 — Behavior-equivalent bridge baseline
-Reproduce the existing multicast ⇄ Reticulum bridge behavior with no new features.
-
-Stage 1 — Reliability and configuration
-Make interface selection, database path, radio module, logging, and reconnect handling configurable and robust.
-
-Stage 2 — Diagnostics and observability
-Expose packet counters, active peers, bridge health, link state, and errors.
-
-Stage 3 — Kaonic-hosted ATAK interface
-Add a management/status interface suitable for integration with the Kaonic workflow.
-
-Stage 4 — End-to-end validation
-Validate actual ATAK SA, markers, and GeoChat using two Kaonic radios and two ATAK devices.
-```
-
-## Known Improvement Areas
-
-| Issue                                         | Why It Matters                                            | Priority |
-| --------------------------------------------- | --------------------------------------------------------- | -------- |
-| Hard-coded local subnet/interface detection   | May fail with different local network layouts             | High     |
-| Retransmission on all non-loopback interfaces | May emit multicast traffic onto unintended interfaces     | High     |
-| Radio daemon reconnect behavior               | Service may appear active while forwarding is unavailable | High     |
-| Packet-by-packet informational logging        | May create excessive logs during normal ATAK use          | Medium   |
-| No externally visible metrics or health API   | Limits diagnostics and future interface work              | Medium   |
-| No completed two-radio end-to-end test        | Prevents operational validation                           | High     |
-
-## Completed Test Record
-
-A connected computer transmitted UDP multicast test packets to both ATAK bridge
-multicast groups. The manually installed upstream bridge joined both groups and
-logged `udp -> rns` after receiving the packets, confirming local multicast
-ingress and handoff into the Reticulum transport path.
-
-This test did not demonstrate remote RF delivery or remote ATAK reception.
-
-## Repository Scope
-
-This repository contains the custom implementation and documentation. The
-Beechat `kaonic-gateway` repository remains an upstream read-only reference and
-dependency source during early development.
-
-Implemented repository structure:
+## Plugin Files
 
 ```text
 Kaonic-ATAK-Plugin/
@@ -257,15 +170,89 @@ Kaonic-ATAK-Plugin/
 └── kaonic-vpn/
 ```
 
-## Next Steps
+## Build and Package
 
-- [x] Complete source extraction from the upstream ATAK bridge implementation.
-- [x] Decide how this standalone repository will reference or vendor required Kaonic gateway/Reticulum dependencies.
-- [x] Define the custom plugin package and service names.
-- [x] Implement the custom validated bridge baseline.
-- [x] Build for Kaonic ARMv7.
-- [ ] Validate real ATAK phone traffic against the custom parser.
-- [ ] Validate two-Kaonic end-to-end radio delivery.
-- [ ] Package and install through the Kaonic Plugins page.
-- [ ] Validate real ATAK phone packet ingress.
-- [ ] Perform two-Kaonic end-to-end testing.
+The target Kaonic tested previously reported `armv7l`. The intended cross-build target is:
+
+```bash
+armv7-unknown-linux-musleabihf
+```
+
+Build and package:
+
+```bash
+cross build --release -p kaonic-atak-plugin --target armv7-unknown-linux-musleabihf
+./scripts/package-plugin.sh armv7-unknown-linux-musleabihf
+```
+
+The resulting ZIP should contain:
+
+```text
+kaonic-plugin.toml
+kaonic-atak-plugin.service
+kaonic-atak-plugin
+kaonic-atak-plugin.sha256
+```
+
+## Runtime Prerequisites
+
+Known device assumptions from prior testing of the upstream reference bridge:
+
+```text
+Kaonic control endpoint: 192.168.10.1:9090
+Gateway database path:  /kaonic-gateway.db
+Device architecture:     armv7l
+```
+
+The service file configures:
+
+```ini
+Environment="KAONIC_GATEWAY_DB_PATH=/kaonic-gateway.db"
+```
+
+For deployments that do not expose exactly one intended ATAK-facing `192.168.10.x` address, set `KAONIC_ATAK_INTERFACE_IP` before starting the service.
+
+## Local Validation Procedure
+
+After building, installing, and starting the plugin on a Kaonic:
+
+```bash
+ip -br addr
+journalctl -fu kaonic-atak-plugin
+```
+
+Confirm that startup logs identify only the intended ATAK-facing interface. Then, from an ATAK-compatible device connected on that network, verify traffic on the CoT channel:
+
+```bash
+tcpdump -ni <interface> udp port 6969
+```
+
+In safe mode, arbitrary test text is expected to be rejected. Use a valid CoT XML packet for packet-ingress validation.
+
+## End-to-End Test Procedure
+
+Use two Kaonics and two ATAK-compatible devices:
+
+```text
+ATAK A -- Kaonic A )) Reticulum/radio (( Kaonic B -- ATAK B
+```
+
+Verify:
+
+1. each plugin selects only its intended ATAK-facing interface;
+2. valid local CoT data is received and forwarded into Reticulum;
+3. the opposite Kaonic receives and rebroadcasts that data locally;
+4. ATAK B displays ATAK A location updates;
+5. reverse-direction operation also works;
+6. unrelated network interfaces do not receive plugin-emitted ATAK multicast.
+
+## Known Limitations
+
+- Real ATAK and two-radio operation have not yet been validated for the custom safety-hardened implementation.
+- Direct GPS accessory, NMEA, MAVLink, serial, USB peripheral, and arbitrary hardware support are intentionally not implemented.
+- Multicast loopback is disabled on plugin-originated transmit sockets; additional duplicate/echo suppression should be considered if testing identifies topology-dependent rebroadcast loops.
+- No web status endpoint is currently exposed for decoded location state or counters.
+
+## Upstream Reference
+
+Beechat's `kaonic-atak-bridge` implementation in `kaonic-gateway` remains a read-only reference for multicast/Reticulum transport patterns and packaging conventions. All custom behavior in this repository should be implemented and maintained here.
