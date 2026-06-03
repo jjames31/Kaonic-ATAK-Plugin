@@ -32,6 +32,9 @@ mod multicast;
 const DEFAULT_DB_PATH: &str = "/kaonic-gateway.db";
 const DEFAULT_CTRL_SERVER: &str = "192.168.10.1:9090";
 const DEFAULT_SEED_KEY: &str = "atak_plugin_identity_seed";
+const ATAK_INTERFACE_ENV: &str = "KAONIC_ATAK_INTERFACE";
+const ATAK_INTERFACE_IP_ENV: &str = "KAONIC_ATAK_INTERFACE_IP";
+const OPAQUE_FORWARDING_ENV: &str = "KAONIC_ATAK_ALLOW_OPAQUE_FORWARDING";
 
 #[derive(Parser)]
 #[command(name = "kaonic-atak-plugin", version)]
@@ -45,12 +48,15 @@ struct Command {
     #[arg(long, default_value = DEFAULT_SEED_KEY)]
     seed_key: String,
 
+    /// ATAK-facing network interface name. Overrides KAONIC_ATAK_INTERFACE.
     #[arg(long, value_name = "IFACE")]
     local_interface: Option<String>,
 
+    /// ATAK-facing IPv4 address. Overrides KAONIC_ATAK_INTERFACE_IP.
     #[arg(long, value_name = "IPv4")]
     local_address: Option<Ipv4Addr>,
 
+    /// Explicit compatibility mode: forward payloads that are not valid CoT XML.
     #[arg(long, default_value_t = false)]
     allow_unvalidated_payloads: bool,
 }
@@ -75,8 +81,11 @@ async fn main() -> Result<(), process::ExitCode> {
         .init();
 
     let selection = InterfaceSelection {
-        interface_name: cmd.local_interface.clone(),
-        local_addr: cmd.local_address,
+        interface_name: cmd
+            .local_interface
+            .clone()
+            .or_else(|| non_empty_env(ATAK_INTERFACE_ENV)),
+        local_addr: configured_ipv4(cmd.local_address, ATAK_INTERFACE_IP_ENV)?,
     };
     let local_interface = select_local_interface(&load_interface_candidates(), &selection)
         .map_err(|err| {
@@ -89,8 +98,14 @@ async fn main() -> Result<(), process::ExitCode> {
         local_interface.addr
     );
 
-    if cmd.allow_unvalidated_payloads {
-        log::warn!("unvalidated ATAK payload forwarding is enabled by command-line override");
+    let allow_unvalidated_payloads =
+        cmd.allow_unvalidated_payloads || env_flag_enabled(OPAQUE_FORWARDING_ENV);
+    if allow_unvalidated_payloads {
+        log::warn!(
+            "unvalidated ATAK payload forwarding is enabled by explicit compatibility override"
+        );
+    } else {
+        log::info!("safe forwarding mode enabled: invalid non-CoT payloads will be dropped");
     }
 
     let db_path =
@@ -171,7 +186,7 @@ async fn main() -> Result<(), process::ExitCode> {
             *channel,
             local_interface.clone(),
             location_state.clone(),
-            cmd.allow_unvalidated_payloads,
+            allow_unvalidated_payloads,
             cancel.clone(),
         )
         .await
@@ -194,6 +209,35 @@ async fn main() -> Result<(), process::ExitCode> {
     }
 
     Ok(())
+}
+
+fn non_empty_env(name: &str) -> Option<String> {
+    std::env::var(name)
+        .ok()
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty())
+}
+
+fn configured_ipv4(
+    cli_value: Option<Ipv4Addr>,
+    env_name: &str,
+) -> Result<Option<Ipv4Addr>, process::ExitCode> {
+    if cli_value.is_some() {
+        return Ok(cli_value);
+    }
+    match non_empty_env(env_name) {
+        Some(value) => value.parse::<Ipv4Addr>().map(Some).map_err(|err| {
+            log::error!("invalid {env_name} value '{value}': {err}");
+            process::ExitCode::FAILURE
+        }),
+        None => Ok(None),
+    }
+}
+
+fn env_flag_enabled(name: &str) -> bool {
+    non_empty_env(name)
+        .map(|value| matches!(value.to_ascii_lowercase().as_str(), "1" | "true" | "yes" | "on"))
+        .unwrap_or(false)
 }
 
 async fn start_bridge(
@@ -398,28 +442,39 @@ fn accept_payload(
 ) -> bool {
     match parse_cot_payload(data) {
         Ok(event) => {
-            let record = location_state.record(source, channel.port, &event);
-            let known_locations = location_state.len();
-            log::debug!(
-                "atak-plugin:{}:{} CoT source={:?} uid={} type={} lat={} lon={} recorded_port={} updated_at={:?} known_locations={}",
-                channel.name,
-                channel.port,
-                record.source,
-                record.uid,
-                record.event_type,
-                record.point.lat,
-                record.point.lon,
-                record.channel_port,
-                record.updated_at,
-                known_locations
-            );
-            location_counter.fetch_add(1, Ordering::Relaxed);
+            if let Some(record) = location_state.record(source, channel.port, &event) {
+                let known_locations = location_state.len();
+                log::debug!(
+                    "atak-plugin:{}:{} CoT source={:?} uid={} callsign={:?} type={} lat={} lon={} recorded_port={} updated_at={:?} known_locations={}",
+                    channel.name,
+                    channel.port,
+                    record.source,
+                    record.uid,
+                    record.callsign,
+                    record.event_type,
+                    record.point.lat,
+                    record.point.lon,
+                    record.channel_port,
+                    record.updated_at,
+                    known_locations
+                );
+                location_counter.fetch_add(1, Ordering::Relaxed);
+            } else {
+                log::debug!(
+                    "atak-plugin:{}:{} accepted valid non-location CoT uid={} type={} source={:?}",
+                    channel.name,
+                    channel.port,
+                    event.uid,
+                    event.event_type,
+                    source
+                );
+            }
             true
         }
         Err(err) if allow_unvalidated_payloads => {
             invalid_counter.fetch_add(1, Ordering::Relaxed);
-            log::warn!(
-                "atak-plugin:{}:{} forwarding unvalidated payload by override: {err}",
+            log::debug!(
+                "atak-plugin:{}:{} forwarding unvalidated payload by explicit override: {err}",
                 channel.name,
                 channel.port
             );
@@ -427,7 +482,7 @@ fn accept_payload(
         }
         Err(err) => {
             invalid_counter.fetch_add(1, Ordering::Relaxed);
-            log::warn!(
+            log::debug!(
                 "atak-plugin:{}:{} dropping invalid ATAK payload: {err}",
                 channel.name,
                 channel.port
