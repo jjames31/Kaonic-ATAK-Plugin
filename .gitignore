@@ -2,3 +2,4 @@ kaonic-dashboard/target
 kaonic-settings/target
 target
 /kaonic-gateway/kaonic-gateway.db
+/deploy/

@@ -22,7 +22,7 @@ custom plugin in this repository.
 | Forwarding into Reticulum path                  | Passed      |
 | Real ATAK phone traffic test                    | Pending     |
 | Two-Kaonic end-to-end radio test                | Pending     |
-| Custom plugin implementation in this repository | Not started |
+| Custom plugin implementation in this repository | Implemented |
 
 ## Intended Architecture
 
@@ -56,8 +56,8 @@ plugin could be useful, but it is not part of this baseline repository scope.
 | SA / CoT     |     `239.2.3.1` |  `6969` | Position, marker, and situational-awareness traffic |
 | GeoChat      |   `224.10.10.1` | `17012` | Chat-related traffic                                |
 
-Stage 0 should preserve these values unchanged for behavior-equivalence
-testing against the upstream bridge.
+The custom plugin preserves these values while adding CoT validation and local
+interface isolation.
 
 ## Upstream Reference Implementation
 
@@ -230,37 +230,42 @@ This test did not demonstrate remote RF delivery or remote ATAK reception.
 
 ## Repository Scope
 
-This repository will contain the custom implementation and documentation. The
-Beechat `kaonic-gateway` repository remains an upstream reference and dependency
-source during early development.
+This repository contains the custom implementation and documentation. The
+Beechat `kaonic-gateway` repository remains an upstream read-only reference and
+dependency source during early development.
 
-Proposed repository structure, not yet implemented:
+Implemented repository structure:
 
 ```text
 Kaonic-ATAK-Plugin/
 ├── README.md
 ├── Cargo.toml
-├── kaonic-plugin.toml
-├── kaonic-atak-plugin.service
 ├── Cross.toml
 ├── scripts/
 │   └── package-plugin.sh
-└── src/
-    ├── main.rs
-    ├── bridge.rs
-    ├── config.rs
-    ├── multicast.rs
-    ├── reticulum_transport.rs
-    └── metrics.rs
+├── kaonic-atak-plugin/
+│   ├── Cargo.toml
+│   ├── kaonic-plugin.toml
+│   ├── kaonic-atak-plugin.service
+│   └── src/
+│       ├── main.rs
+│       ├── cot.rs
+│       ├── interface.rs
+│       └── multicast.rs
+├── kaonic-gateway/
+├── kaonic-reticulum/
+└── kaonic-vpn/
 ```
 
 ## Next Steps
 
-- [ ] Complete source extraction from the upstream ATAK bridge implementation.
-- [ ] Decide how this standalone repository will reference or vendor required Kaonic gateway/Reticulum dependencies.
-- [ ] Define the Stage 0 plugin package and service names.
-- [ ] Implement the behavior-equivalent bridge baseline.
-- [ ] Build for Kaonic ARMv7.
+- [x] Complete source extraction from the upstream ATAK bridge implementation.
+- [x] Decide how this standalone repository will reference or vendor required Kaonic gateway/Reticulum dependencies.
+- [x] Define the custom plugin package and service names.
+- [x] Implement the custom validated bridge baseline.
+- [x] Build for Kaonic ARMv7.
+- [ ] Validate real ATAK phone traffic against the custom parser.
+- [ ] Validate two-Kaonic end-to-end radio delivery.
 - [ ] Package and install through the Kaonic Plugins page.
 - [ ] Validate real ATAK phone packet ingress.
 - [ ] Perform two-Kaonic end-to-end testing.

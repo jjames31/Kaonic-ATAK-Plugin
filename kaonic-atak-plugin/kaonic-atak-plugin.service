@@ -1,12 +1,12 @@
 [Unit]
-Description=Kaonic ATAK Interface
+Description=Kaonic ATAK Plugin
 After=network-online.target kaonic-commd.service
 Wants=network-online.target
 
 [Service]
 Type=simple
 Environment="KAONIC_GATEWAY_DB_PATH=/kaonic-gateway.db"
-ExecStart=/usr/bin/kaonic-atak-interface --rns-module 0
+ExecStart=/usr/bin/kaonic-atak-plugin --rns-module 0
 Restart=always
 RestartSec=3
 StandardOutput=journal

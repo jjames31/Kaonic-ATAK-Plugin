@@ -1,10 +1,11 @@
 [package]
-name = "kaonic-atak-interface"
-version = "0.1.0"
+name = "kaonic-atak-plugin"
+version = "0.1.1"
+authors = ["jjames31"]
 edition = "2021"
 
 [[bin]]
-name = "kaonic-atak-interface"
+name = "kaonic-atak-plugin"
 path = "src/main.rs"
 
 [dependencies]
@@ -18,3 +19,4 @@ env_logger = "0.11"
 clap = { version = "4", features = ["derive"] }
 log = "0.4"
 rand = "0.8"
+roxmltree = "0.20"

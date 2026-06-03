@@ -1,0 +1,9 @@
+[kaonic-plugin]
+name = "Kaonic ATAK Plugin"
+description = "Custom ATAK CoT multicast service that validates local ATAK traffic and transports it over the Kaonic Reticulum radio mesh."
+version = "V0.1.1"
+service = "kaonic-atak-plugin.service"
+developer = "jjames31"
+channel = "experimental"
+github_url = "https://github.com/jjames31/Kaonic-ATAK-Plugin"
+symlink = "/usr/bin/kaonic-atak-plugin"

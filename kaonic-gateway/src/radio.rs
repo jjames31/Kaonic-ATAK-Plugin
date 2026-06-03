@@ -106,6 +106,50 @@ pub async fn attach_radio_interface(
     Ok(())
 }
 
+/// Apply saved settings and wire only `rns_module` into the transport.
+pub async fn attach_selected_radio_interface(
+    transport: &Arc<Mutex<Transport>>,
+    radio_client: SharedRadioClient,
+    radio: &HardwareRadioConfig,
+    rns_module: usize,
+    tx_observer: Option<SharedTxObserver>,
+    error_observer: Option<SharedErrorObserver>,
+) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    let cfg = radio.module_configs.get(rns_module).ok_or_else(|| {
+        std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            format!("radio module {rns_module} not found"),
+        )
+    })?;
+
+    log::info!("applying saved radio config for selected module {rns_module}");
+    if let Err(e) = radio_client
+        .lock()
+        .await
+        .set_radio_config(rns_module, cfg.radio_config.clone())
+        .await
+    {
+        log::warn!("boot radio config error for selected module {rns_module}: {e:?}");
+    }
+    if let Err(e) = radio_client
+        .lock()
+        .await
+        .set_modulation(rns_module, cfg.modulation.clone())
+        .await
+    {
+        log::warn!("boot modulation error for selected module {rns_module}: {e:?}");
+    }
+
+    let iface = KaonicCtrlInterface::new(radio_client, rns_module, tx_observer, error_observer);
+    let iface_mgr = transport.lock().await.iface_manager();
+    iface_mgr
+        .lock()
+        .await
+        .spawn(iface, KaonicCtrlInterface::spawn);
+
+    Ok(())
+}
+
 pub async fn transmit_test_frame(
     radio_client: Option<SharedRadioClient>,
     tx_observer: Option<SharedTxObserver>,
