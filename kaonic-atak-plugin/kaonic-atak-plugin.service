@@ -9,12 +9,15 @@ Before=kaonic-atak-bridge.service
 [Service]
 Type=simple
 Environment="KAONIC_GATEWAY_DB_PATH=/kaonic-gateway.db"
+# Keep connection, peer-link, packet-validation, and transport errors visible over SSH with journalctl.
+Environment="RUST_LOG=info,kaonic_atak_plugin=debug,kaonic_gateway=info,kaonic_reticulum=info,kaonic_ctrl=info,reticulum=info"
 # Once this replacement is started, do not start the default bridge again at boot.
 # Ignore failure so the plugin also works on images where the default bridge is absent.
 ExecStartPre=-systemctl disable kaonic-atak-bridge.service
 ExecStart=/usr/bin/kaonic-atak-plugin --rns-module 0
 Restart=always
 RestartSec=3
+SyslogIdentifier=kaonic-atak-plugin
 StandardOutput=journal
 StandardError=journal
 
