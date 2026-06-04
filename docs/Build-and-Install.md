@@ -7,7 +7,7 @@ The plugin is intended to run on the Kaonic's ARMv7 Linux environment. The deplo
 1. Build the release binary for the Kaonic target.
 2. Package the binary with its service file and plugin manifest.
 3. Upload the ZIP through the Kaonic plugin installer.
-4. Confirm that the service starts on the intended ATAK-facing network.
+4. Confirm that the custom service starts on the intended ATAK-facing network and that the default ATAK bridge is no longer active.
 
 The current custom implementation should be treated as pre-deployment software until it has been built and tested on hardware.
 
@@ -84,6 +84,37 @@ The default control endpoint used by the plugin is:
 
 ```text
 192.168.10.1:9090
+```
+
+## Replacing the default ATAK bridge
+
+This service is intended to replace `kaonic-atak-bridge.service`, not run beside it. Both services listen for and publish the same ATAK multicast traffic, so running both could duplicate packets or cause confusing bridge behavior.
+
+The packaged unit handles this in two ways:
+
+```ini
+Conflicts=kaonic-atak-bridge.service
+Before=kaonic-atak-bridge.service
+ExecStartPre=-systemctl disable kaonic-atak-bridge.service
+```
+
+When `kaonic-atak-plugin.service` is started, systemd stops the default bridge if it is active because the units conflict. The pre-start command disables the default bridge so it is not brought back on the next boot. The leading `-` allows installation on an image that does not include the default bridge unit.
+
+After installing and starting this plugin, verify the replacement state:
+
+```bash
+systemctl is-enabled kaonic-atak-bridge.service
+systemctl is-active kaonic-atak-bridge.service
+systemctl is-active kaonic-atak-plugin.service
+```
+
+Expected result: `kaonic-atak-bridge.service` is disabled and inactive, while `kaonic-atak-plugin.service` is active.
+
+To intentionally restore the upstream bridge later:
+
+```bash
+systemctl disable --now kaonic-atak-plugin.service
+systemctl enable --now kaonic-atak-bridge.service
 ```
 
 ## Configure the local ATAK interface
