@@ -134,7 +134,7 @@ impl Database {
                     }
                 })
                 .and_then(|v| serde_json::from_str(&v).ok())
-                .unwrap_or_else(|| defaults.module_configs[i].radio_config.clone());
+                .unwrap_or_else(|| defaults.module_configs[i].radio_config);
             let modulation = self
                 .get(&format!("kaonic_ctrl_modulation{suffix}"))
                 .ok()
@@ -147,7 +147,7 @@ impl Database {
                     }
                 })
                 .and_then(|v| serde_json::from_str(&v).ok())
-                .unwrap_or_else(|| defaults.module_configs[i].modulation.clone());
+                .unwrap_or_else(|| defaults.module_configs[i].modulation);
             RadioModuleConfig {
                 radio_config,
                 modulation,

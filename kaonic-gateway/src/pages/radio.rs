@@ -30,7 +30,7 @@ pub async fn save_settings(settings: GatewaySettingsDto) -> Result<(), ServerFnE
     let state = leptos::context::use_context::<AppState>()
         .ok_or_else(|| ServerFnError::new("missing AppState context"))?;
 
-    let config = GatewayConfig::try_from(settings).map_err(|e| ServerFnError::new(e))?;
+    let config = GatewayConfig::try_from(settings).map_err(ServerFnError::new)?;
 
     state
         .settings
@@ -398,11 +398,11 @@ fn RadioModuleForm(index: usize, module: RadioModuleConfigDto) -> impl IntoView 
     };
 
     let ofdm = match &module.modulation {
-        Modulation::Ofdm(o) => o.clone(),
+        Modulation::Ofdm(o) => *o,
         _ => OfdmModulation::default(),
     };
     let qpsk = match &module.modulation {
-        Modulation::Qpsk(q) => q.clone(),
+        Modulation::Qpsk(q) => *q,
         _ => QpskModulation::default(),
     };
     let default_module = HardwareRadioConfig::default().module_configs[index].clone();

@@ -363,16 +363,15 @@ fn SystemCard(system: SystemStatusDto) -> impl IntoView {
     let fs_total = system.fs_total_mb;
     let fs_used = fs_total.saturating_sub(fs_free);
     let os_details = system.os_details;
-    let ram_pct = if ram_total > 0 {
-        ram_used * 100 / ram_total
-    } else {
-        0
-    };
-    let fs_pct = if fs_total > 0 {
-        (fs_total.saturating_sub(fs_free)) * 100 / fs_total
-    } else {
-        0
-    };
+    let ram_pct = ram_used
+        .saturating_mul(100)
+        .checked_div(ram_total)
+        .unwrap_or(0);
+    let fs_pct = fs_total
+        .saturating_sub(fs_free)
+        .saturating_mul(100)
+        .checked_div(fs_total)
+        .unwrap_or(0);
     let fs_value = format_storage_mb(fs_used) + " / " + &format_storage_mb(fs_total) + " used";
 
     view! {

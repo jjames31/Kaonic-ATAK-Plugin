@@ -97,7 +97,7 @@ pub enum NetworkError {
     CommandFailed { command: String, message: String },
 }
 
-#[derive(Debug)]
+#[derive(Debug, Default)]
 pub struct NetworkService {
     #[cfg(not(target_os = "linux"))]
     mock: Mutex<MockNetworkState>,
@@ -120,15 +120,6 @@ impl Default for MockNetworkState {
             antenna: WifiAntenna::Internal,
             configured_ssid: None,
             connected_ssid: None,
-        }
-    }
-}
-
-impl Default for NetworkService {
-    fn default() -> Self {
-        Self {
-            #[cfg(not(target_os = "linux"))]
-            mock: Mutex::new(MockNetworkState::default()),
         }
     }
 }

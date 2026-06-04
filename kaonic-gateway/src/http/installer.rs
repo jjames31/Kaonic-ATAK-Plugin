@@ -154,9 +154,7 @@ fn replace_installer_binary(binary_bytes: &[u8]) -> Result<String, String> {
         let _ = std::fs::remove_file(&temp_path);
         return Err(err);
     }
-    if let Err(err) = run_systemctl("start", INSTALLER_SERVICE) {
-        return Err(err);
-    }
+    run_systemctl("start", INSTALLER_SERVICE)?;
     Ok("kaonic-installer binary upgraded.".to_string())
 }
 

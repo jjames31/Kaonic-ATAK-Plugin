@@ -39,7 +39,7 @@ pub struct LinuxTun {
 impl LinuxTun {
     pub fn open() -> std::io::Result<Arc<Self>> {
         let tun = riptun::TokioTun::new(TUN_NAME_TEMPLATE, 1)
-            .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e.to_string()))?;
+            .map_err(|e| std::io::Error::other(e.to_string()))?;
         let name = tun.name().to_string();
         Ok(Arc::new(Self { tun, name }))
     }

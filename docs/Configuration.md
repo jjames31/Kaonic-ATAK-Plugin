@@ -70,7 +70,7 @@ Do not enable compatibility mode on a network where arbitrary devices may transm
 
 Diagnostic tracking is independent from ATAK forwarding. It is disabled by default and, when enabled, temporarily records the Reticulum peer hash associated with valid remote CoT events. ATAK messages are not altered.
 
-Each Kaonic plugin exposes a local loopback UDP control interface and carries enable/disable commands over a separate Reticulum diagnostic control destination. The default local control address is:
+Each Kaonic plugin exposes a local loopback UDP control interface. The default local control address is:
 
 ```text
 127.0.0.1:19001
@@ -88,7 +88,13 @@ or an environment variable:
 KAONIC_ATAK_DIAGNOSTICS_CONTROL_LISTEN=127.0.0.1:19001
 ```
 
-Do not bind this endpoint to a non-loopback interface unless local-network control is explicitly required and secured.
+The service refuses non-loopback diagnostics-control bindings by default. For a controlled test that intentionally exposes the local control socket, set an explicit insecure override:
+
+```bash
+KAONIC_ATAK_ALLOW_INSECURE_DIAGNOSTICS_CONTROL_LISTEN=true
+```
+
+Do not use this override unless local-network control is explicitly required and protected separately.
 
 ### Local commands
 
@@ -96,9 +102,9 @@ A local CLI or a future diagnostics plugin can send the following UDP text comma
 
 | Command | Behavior |
 | --- | --- |
-| `enable` | Enable diagnostics across participating plugin nodes for 900 seconds. |
+| `enable` | Enable local diagnostics for 900 seconds. |
 | `enable <seconds>` | Enable for 1 to 86,400 seconds. |
-| `disable` | Disable diagnostics across participating plugin nodes. |
+| `disable` | Disable local diagnostics and clear retained diagnostic records. |
 | `status` | Return local enable state and retained-record count. |
 | `recent [1-20]` | Return bounded recent peer-to-CoT records stored locally. |
 
@@ -108,6 +114,12 @@ Example:
 printf 'enable 900\n' | nc -u -w1 127.0.0.1 19001
 printf 'recent 10\n' | nc -u -w1 127.0.0.1 19001
 printf 'disable\n' | nc -u -w1 127.0.0.1 19001
+```
+
+Unauthenticated network-wide enable/disable propagation is disabled by default. For a trusted bench mesh, enable it explicitly:
+
+```bash
+KAONIC_ATAK_ENABLE_UNAUTHENTICATED_DIAGNOSTICS_MESH_CONTROL=true
 ```
 
 This control channel is currently intended for trusted development/test meshes. It should be extended with signed management authorization before operational deployment with untrusted nodes. See [Diagnostic Peer-Hash Tracking](Diagnostics.md) for the data boundary and future plugin integration plan.
@@ -130,6 +142,12 @@ To select a non-default loopback diagnostics-control port, add:
 
 ```ini
 Environment="KAONIC_ATAK_DIAGNOSTICS_CONTROL_LISTEN=127.0.0.1:19001"
+```
+
+To enable unauthenticated diagnostics propagation for a trusted bench mesh only, add:
+
+```ini
+Environment="KAONIC_ATAK_ENABLE_UNAUTHENTICATED_DIAGNOSTICS_MESH_CONTROL=true"
 ```
 
 Then reload systemd and restart the service:

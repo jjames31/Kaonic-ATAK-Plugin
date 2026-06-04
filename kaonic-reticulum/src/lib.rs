@@ -33,6 +33,16 @@ type RadioNetwork = KaonicNetNetwork<
 >;
 type RadioSegmentBuffer = FrameSegment<RADIO_FRAME_SIZE, LDPC_SEGMENTS_PER_PACKET>;
 
+struct TransmitContext<'a> {
+    radio_client: &'a Arc<Mutex<RadioClient>>,
+    module: usize,
+    tx_observer: &'a Option<TxObserver>,
+    error_observer: &'a Option<ErrorObserver>,
+    tx_network: &'a mut RadioNetwork,
+    tx_frames: &'a mut [Frame<RADIO_FRAME_SIZE>; LDPC_SEGMENTS_PER_PACKET],
+    tx_buffer: &'a mut [u8],
+}
+
 /// Reticulum interface that forwards packets through the kaonic radio hardware
 /// via the kaonic-ctrl UDP control protocol.
 ///
@@ -202,16 +212,16 @@ impl KaonicCtrlInterface {
                     tokio::select! {
                         _ = cancel.cancelled() => break,
                         Some(message) = tx_channel.recv() => {
-                            transmit_message(
-                                &radio_client,
+                            let context = TransmitContext {
+                                radio_client: &radio_client,
                                 module,
-                                &tx_observer,
-                                &error_observer,
-                                &mut tx_network,
-                                &mut tx_frames,
-                                &mut tx_buffer,
-                                message,
-                            ).await;
+                                tx_observer: &tx_observer,
+                                error_observer: &error_observer,
+                                tx_network: &mut tx_network,
+                                tx_frames: &mut tx_frames,
+                                tx_buffer: &mut tx_buffer,
+                            };
+                            transmit_message(context, message).await;
                         }
                         else => break,
                     }
@@ -242,63 +252,66 @@ fn frame_preview(bytes: &[u8]) -> String {
         .join("")
 }
 
-async fn transmit_message(
-    radio_client: &Arc<Mutex<RadioClient>>,
-    module: usize,
-    tx_observer: &Option<TxObserver>,
-    error_observer: &Option<ErrorObserver>,
-    tx_network: &mut RadioNetwork,
-    tx_frames: &mut [Frame<RADIO_FRAME_SIZE>; LDPC_SEGMENTS_PER_PACKET],
-    tx_buffer: &mut [u8],
-    message: TxMessage,
-) {
-    let mut output = OutputBuffer::new(tx_buffer);
-    if let Ok(_) = message.packet.serialize(&mut output) {
+async fn transmit_message(context: TransmitContext<'_>, message: TxMessage) {
+    let mut output = OutputBuffer::new(context.tx_buffer);
+    if message.packet.serialize(&mut output).is_ok() {
         let bytes = output.as_slice();
-        match tx_network.transmit(bytes, OsRng, tx_frames) {
+        match context.tx_network.transmit(bytes, OsRng, context.tx_frames) {
             Ok(frames) => {
                 log::trace!(
                     "kaonic_ctrl: tx module={} {} payload_len={} encoded_frames={}",
-                    module,
+                    context.module,
                     packet_log_summary(&message.packet),
                     bytes.len(),
                     frames.len()
                 );
 
-                let mut radio_client = radio_client.lock().await;
+                let mut radio_client = context.radio_client.lock().await;
                 for frame in frames {
                     let frame_bytes = frame.as_slice();
-                    if let Err(err) = radio_client.transmit(module, frame).await {
-                        notify_error(error_observer, module, InterfaceErrorKind::TxTransmit);
+                    if let Err(err) = radio_client.transmit(context.module, frame).await {
+                        notify_error(
+                            context.error_observer,
+                            context.module,
+                            InterfaceErrorKind::TxTransmit,
+                        );
                         log::warn!(
                             "kaonic_ctrl: tx failed module={} {} payload_len={} frame_len={} err={err:?}",
-                            module,
+                            context.module,
                             packet_log_summary(&message.packet),
                             bytes.len(),
                             frame_bytes.len()
                         );
                         return;
                     }
-                    if let Some(observer) = tx_observer {
-                        observer(module, frame_bytes);
+                    if let Some(observer) = context.tx_observer {
+                        observer(context.module, frame_bytes);
                     }
                 }
             }
             Err(err) => {
-                notify_error(error_observer, module, InterfaceErrorKind::TxLdpcEncode);
+                notify_error(
+                    context.error_observer,
+                    context.module,
+                    InterfaceErrorKind::TxLdpcEncode,
+                );
                 log::warn!(
                     "kaonic_ctrl: tx ldpc encode failed module={} {} payload_len={} err={err:?}",
-                    module,
+                    context.module,
                     packet_log_summary(&message.packet),
                     bytes.len()
                 );
             }
         }
     } else {
-        notify_error(error_observer, module, InterfaceErrorKind::TxSerialize);
+        notify_error(
+            context.error_observer,
+            context.module,
+            InterfaceErrorKind::TxSerialize,
+        );
         log::warn!(
             "kaonic_ctrl: packet serialize failed module={} {}",
-            module,
+            context.module,
             packet_log_summary(&message.packet)
         );
     }

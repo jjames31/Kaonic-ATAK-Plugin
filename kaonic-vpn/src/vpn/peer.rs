@@ -24,6 +24,7 @@ pub enum LinkState {
     Pending,
     Active,
     Closed,
+    #[allow(dead_code)]
     Error,
 }
 

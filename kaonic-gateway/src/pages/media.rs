@@ -306,9 +306,11 @@ fn AudioControlCard(card_id: usize, control: AudioControlSnapshot) -> impl IntoV
     let control_key = format!("{card_id}-{}", control.control_id);
     let endpoint = format!("/api/audio/{card_id}/{}", control.control_id);
     let test_supported = matches!(control.control_id.as_str(), "speaker" | "headphones");
-    let test_endpoint = test_supported
-        .then(|| format!("/api/audio/{card_id}/{}/test", control.control_id))
-        .unwrap_or_default();
+    let test_endpoint = if test_supported {
+        format!("/api/audio/{card_id}/{}/test", control.control_id)
+    } else {
+        String::new()
+    };
 
     view! {
         <div
@@ -370,7 +372,7 @@ fn AudioControlCard(card_id: usize, control: AudioControlSnapshot) -> impl IntoV
                     {if test_supported {
                         view! { <button class="mute-btn" data-audio-test>"Test"</button> }.into_any()
                     } else {
-                        view! {}.into_any()
+                        ().into_any()
                     }}
                 </div>
             </div>

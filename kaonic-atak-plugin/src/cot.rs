@@ -59,6 +59,7 @@ pub enum PacketSource {
 }
 
 #[derive(Debug, Clone)]
+#[allow(dead_code)]
 pub struct LocationRecord {
     pub uid: String,
     pub event_type: String,

@@ -26,7 +26,7 @@ When enabled, each receiving plugin stores a bounded, in-memory set of diagnosti
 
 Records are never inserted into the ATAK packet. The original validated CoT/GeoChat packet bytes are still forwarded unchanged to ATAK.
 
-The diagnostic records are volatile: they are lost when the plugin process exits or the Kaonic restarts. Persistent storage, richer telemetry, and visualization are reserved for a future diagnostics plugin.
+The diagnostic records are volatile. They are cleared when diagnostics are disabled, when the enable window expires, or when the plugin process exits. Persistent storage, richer telemetry, and visualization are reserved for a future diagnostics plugin.
 
 ## Network-wide control channel
 
@@ -36,7 +36,9 @@ Each plugin creates a Reticulum diagnostic control destination named:
 kaonic.atak.diag.control
 ```
 
-Nodes advertise and discover this destination separately from the ATAK data channels. A local enable or disable request creates a small versioned diagnostic command and relays it through discovered diagnostic control links. Each node applies each command identifier once and forwards a new command once so commands can propagate through a multi-node topology without looping indefinitely.
+Unauthenticated mesh control is disabled by default. When it is explicitly enabled for a trusted test mesh, nodes advertise and discover this destination separately from the ATAK data channels. A local enable or disable request creates a small versioned diagnostic command and relays it through discovered diagnostic control links. Each node applies each command identifier once and forwards a new command once so commands can propagate through a multi-node topology without looping indefinitely.
+
+Propagation is best-effort. A node that joins after an enable or disable command has already traversed the mesh does not receive the current state until another local control command is issued. Operational use should replace this with an authenticated management protocol that also supports state synchronization.
 
 Supported actions are:
 
@@ -44,6 +46,18 @@ Supported actions are:
 - disable peer-hash diagnostic recording immediately.
 
 Enable requests expire automatically. The default duration is 900 seconds (15 minutes); the maximum accepted duration is 86,400 seconds (24 hours).
+
+Enable unauthenticated mesh control only on a trusted bench network:
+
+```bash
+kaonic-atak-plugin --enable-unauthenticated-diagnostics-mesh-control
+```
+
+or:
+
+```bash
+KAONIC_ATAK_ENABLE_UNAUTHENTICATED_DIAGNOSTICS_MESH_CONTROL=true
+```
 
 ## Local control socket
 
@@ -69,9 +83,9 @@ The loopback socket is the intended integration point for a later diagnostics pl
 
 | Command | Meaning |
 | --- | --- |
-| `enable` | Enable network-wide diagnostics for 900 seconds. |
-| `enable <seconds>` | Enable network-wide diagnostics for a requested bounded duration. |
-| `disable` | Disable diagnostics across the diagnostic control mesh. |
+| `enable` | Enable local diagnostics for 900 seconds. If unauthenticated mesh control is explicitly enabled, also announce the command to discovered diagnostic peers. |
+| `enable <seconds>` | Enable local diagnostics for a requested bounded duration. If unauthenticated mesh control is explicitly enabled, also announce the command to discovered diagnostic peers. |
+| `disable` | Disable local diagnostics and clear retained records. If unauthenticated mesh control is explicitly enabled, also announce the command to discovered diagnostic peers. |
 | `status` | Return local state and number of retained records. |
 | `recent` | Return the most recent ten local diagnostic records. |
 | `recent <1-20>` | Return up to the requested number of recent records. |
@@ -99,11 +113,25 @@ RECORD unix_ms=<time> peer=<hash> port=<port> uid=<uid> callsign=<callsign> type
 
 ## Security boundary
 
-This first control-plane implementation is designed for a trusted test mesh. It uses Reticulum diagnostic links and a loopback-only local control endpoint, but it does not yet add application-level signed authorization for network enable/disable commands.
+This first control-plane implementation is designed for a trusted test mesh. It uses a loopback-only local control endpoint by default. When the explicit mesh-control override is enabled, it also uses Reticulum diagnostic links, but it does not yet add application-level signed authorization for network enable/disable commands.
 
 Before operational use on a network where an untrusted Kaonic could participate, the diagnostics plugin should add an authorization layer, such as signed control commands accepted only from a designated management identity.
 
-Do not bind the local control socket to a non-loopback address unless remote local-network control is explicitly intended.
+The service refuses non-loopback local-control bindings unless an explicit insecure override is supplied:
+
+```bash
+kaonic-atak-plugin \
+  --diagnostics-control-listen 0.0.0.0:19001 \
+  --allow-insecure-diagnostics-control-listen
+```
+
+or:
+
+```bash
+KAONIC_ATAK_ALLOW_INSECURE_DIAGNOSTICS_CONTROL_LISTEN=true
+```
+
+Do not use that override unless remote local-network control is explicitly intended and protected by a separate access-control design.
 
 ## Future diagnostics plugin integration
 

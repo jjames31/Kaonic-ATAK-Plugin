@@ -9,7 +9,7 @@ use clap::Parser;
 use cot::{parse_cot_payload, LocationState, PacketSource};
 use diagnostics::{
     DiagnosticAction, DiagnosticCommand, DiagnosticRecord, DiagnosticState, DEFAULT_ENABLE_SECONDS,
-    MAX_ENABLE_SECONDS,
+    MAX_COMMAND_BYTES, MAX_ENABLE_SECONDS,
 };
 use interface::{
     load_interface_candidates, select_local_interface, InterfaceSelection, LocalInterface,
@@ -42,10 +42,15 @@ const ATAK_INTERFACE_ENV: &str = "KAONIC_ATAK_INTERFACE";
 const ATAK_INTERFACE_IP_ENV: &str = "KAONIC_ATAK_INTERFACE_IP";
 const OPAQUE_FORWARDING_ENV: &str = "KAONIC_ATAK_ALLOW_OPAQUE_FORWARDING";
 const DIAGNOSTICS_CONTROL_LISTEN_ENV: &str = "KAONIC_ATAK_DIAGNOSTICS_CONTROL_LISTEN";
+const INSECURE_DIAGNOSTICS_CONTROL_LISTEN_ENV: &str =
+    "KAONIC_ATAK_ALLOW_INSECURE_DIAGNOSTICS_CONTROL_LISTEN";
+const UNAUTHENTICATED_DIAGNOSTICS_MESH_CONTROL_ENV: &str =
+    "KAONIC_ATAK_ENABLE_UNAUTHENTICATED_DIAGNOSTICS_MESH_CONTROL";
 const DEFAULT_DIAGNOSTICS_CONTROL_LISTEN: &str = "127.0.0.1:19001";
 const DIAGNOSTICS_DEST_NAME: &str = "atak.diag.control";
 const DIAGNOSTICS_PORT_TAG: &[u8] = b"atak-diag-control-v1";
 const MAX_LOCAL_RECENT_RECORDS: usize = 20;
+const MAX_LOCAL_DIAGNOSTIC_REQUEST_BYTES: usize = 256;
 
 #[derive(Parser)]
 #[command(name = "kaonic-atak-plugin", version)]
@@ -75,6 +80,14 @@ struct Command {
     /// Overrides KAONIC_ATAK_DIAGNOSTICS_CONTROL_LISTEN.
     #[arg(long, value_name = "IPv4:PORT")]
     diagnostics_control_listen: Option<SocketAddr>,
+
+    /// Permit diagnostics local-control binding outside loopback. Insecure; use only for controlled tests.
+    #[arg(long, default_value_t = false)]
+    allow_insecure_diagnostics_control_listen: bool,
+
+    /// Enable unauthenticated network-wide diagnostics control. Insecure; use only on trusted test meshes.
+    #[arg(long, default_value_t = false)]
+    enable_unauthenticated_diagnostics_mesh_control: bool,
 }
 
 #[derive(Default)]
@@ -100,7 +113,7 @@ async fn main() -> Result<(), process::ExitCode> {
     let cmd = Command::parse();
 
     env_logger::Builder::new()
-        .parse_filters("warn,kaonic_atak_plugin=debug,kaonic_gateway=warn,reticulum=warn")
+        .parse_filters("warn,kaonic_atak_plugin=info,kaonic_gateway=warn,reticulum=warn")
         .parse_default_env()
         .init();
 
@@ -137,10 +150,25 @@ async fn main() -> Result<(), process::ExitCode> {
         DIAGNOSTICS_CONTROL_LISTEN_ENV,
     )?
     .unwrap_or_else(|| DEFAULT_DIAGNOSTICS_CONTROL_LISTEN.parse().unwrap());
-    if !diagnostics_control_listen.ip().is_loopback() {
+    let allow_insecure_diagnostics_control_listen = cmd.allow_insecure_diagnostics_control_listen
+        || env_flag_enabled(INSECURE_DIAGNOSTICS_CONTROL_LISTEN_ENV);
+    validate_diagnostics_control_listen(
+        diagnostics_control_listen,
+        allow_insecure_diagnostics_control_listen,
+    )?;
+    if allow_insecure_diagnostics_control_listen && !diagnostics_control_listen.ip().is_loopback() {
         log::warn!(
-            "diagnostics local control socket is not bound to loopback: {}",
+            "insecure diagnostics local control socket binding allowed by explicit override: {}",
             diagnostics_control_listen
+        );
+    }
+
+    let enable_unauthenticated_diagnostics_mesh_control = cmd
+        .enable_unauthenticated_diagnostics_mesh_control
+        || env_flag_enabled(UNAUTHENTICATED_DIAGNOSTICS_MESH_CONTROL_ENV);
+    if enable_unauthenticated_diagnostics_mesh_control {
+        log::warn!(
+            "unauthenticated network-wide diagnostics control is enabled for this trusted test mesh"
         );
     }
 
@@ -220,6 +248,7 @@ async fn main() -> Result<(), process::ExitCode> {
         id.clone(),
         diagnostic_state.clone(),
         diagnostics_control_listen,
+        enable_unauthenticated_diagnostics_mesh_control,
         cancel.clone(),
     )
     .await
@@ -300,6 +329,21 @@ fn configured_socket_addr(
     }
 }
 
+fn validate_diagnostics_control_listen(
+    listen_addr: SocketAddr,
+    allow_insecure: bool,
+) -> Result<(), process::ExitCode> {
+    if listen_addr.ip().is_loopback() || allow_insecure {
+        return Ok(());
+    }
+    log::error!(
+        "diagnostics local control socket must bind to loopback unless \
+         --allow-insecure-diagnostics-control-listen or \
+         {INSECURE_DIAGNOSTICS_CONTROL_LISTEN_ENV}=true is set"
+    );
+    Err(process::ExitCode::FAILURE)
+}
+
 fn env_flag_enabled(name: &str) -> bool {
     non_empty_env(name)
         .map(|value| {
@@ -311,6 +355,7 @@ fn env_flag_enabled(name: &str) -> bool {
         .unwrap_or(false)
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn start_bridge(
     transport: Arc<Mutex<Transport>>,
     identity: PrivateIdentity,
@@ -469,7 +514,7 @@ async fn start_bridge(
                                 if ev.app_data.as_slice() != port_tag {
                                     continue;
                                 }
-                                let peer = ev.destination.lock().await.desc.clone();
+                                let peer = ev.destination.lock().await.desc;
                                 if peer.address_hash == dest_hash {
                                     continue;
                                 }
@@ -515,13 +560,32 @@ async fn start_diagnostics_control(
     identity: PrivateIdentity,
     diagnostic_state: Arc<DiagnosticState>,
     local_control_addr: SocketAddr,
+    enable_mesh_control: bool,
     cancel: CancellationToken,
 ) -> Result<Vec<JoinHandle<()>>, Box<dyn std::error::Error + Send + Sync>> {
+    let control_socket = UdpSocket::bind(local_control_addr).await?;
+
+    if !enable_mesh_control {
+        log::info!(
+            "atak-plugin:diagnostics listening locally on {} (mesh control disabled by default)",
+            local_control_addr
+        );
+        return Ok(vec![spawn_local_diagnostics_control(
+            control_socket,
+            None,
+            diagnostic_state,
+            cancel,
+        )]);
+    }
+
     let peer_hashes = Arc::new(Mutex::new(HashSet::<AddressHash>::new()));
     let destination = transport
         .lock()
         .await
-        .add_destination(identity, DestinationName::new("kaonic", DIAGNOSTICS_DEST_NAME))
+        .add_destination(
+            identity,
+            DestinationName::new("kaonic", DIAGNOSTICS_DEST_NAME),
+        )
         .await;
     let dest_hash = destination.lock().await.desc.address_hash;
 
@@ -533,63 +597,18 @@ async fn start_diagnostics_control(
         transport.lock().await.send_packet(pkt).await;
     }
 
-    let control_socket = UdpSocket::bind(local_control_addr).await?;
     log::info!(
         "atak-plugin:diagnostics listening locally on {} dest={} (disabled by default)",
         local_control_addr,
         dest_hash
     );
 
-    let local_control = {
-        let transport = transport.clone();
-        let cancel = cancel.clone();
-        let diagnostic_state = diagnostic_state.clone();
-        tokio::spawn(async move {
-            let mut buf = [0u8; 1024];
-            loop {
-                tokio::select! {
-                    _ = cancel.cancelled() => break,
-                    result = control_socket.recv_from(&mut buf) => {
-                        match result {
-                            Ok((len, source)) => {
-                                let response = match parse_local_diagnostic_request(&buf[..len]) {
-                                    Ok(LocalDiagnosticRequest::Enable(seconds)) => {
-                                        match DiagnosticCommand::enable(new_command_id(), seconds) {
-                                            Ok(command) => {
-                                                diagnostic_state.apply_once(&command);
-                                                transport.lock().await.send_to_in_links(&dest_hash, &command.encode()).await;
-                                                log::warn!("diagnostics peer-hash tracking enabled locally for {seconds}s and announced across the diagnostic mesh");
-                                                format_diagnostic_status(&diagnostic_state)
-                                            }
-                                            Err(err) => format!("ERR {err}\n"),
-                                        }
-                                    }
-                                    Ok(LocalDiagnosticRequest::Disable) => {
-                                        match DiagnosticCommand::disable(new_command_id()) {
-                                            Ok(command) => {
-                                                diagnostic_state.apply_once(&command);
-                                                transport.lock().await.send_to_in_links(&dest_hash, &command.encode()).await;
-                                                log::warn!("diagnostics peer-hash tracking disabled locally and announced across the diagnostic mesh");
-                                                format_diagnostic_status(&diagnostic_state)
-                                            }
-                                            Err(err) => format!("ERR {err}\n"),
-                                        }
-                                    }
-                                    Ok(LocalDiagnosticRequest::Status) => format_diagnostic_status(&diagnostic_state),
-                                    Ok(LocalDiagnosticRequest::Recent(limit)) => format_recent_records(&diagnostic_state, limit),
-                                    Err(err) => format!("ERR {err}\n"),
-                                };
-                                if let Err(err) = control_socket.send_to(response.as_bytes(), source).await {
-                                    log::warn!("diagnostics local response error: {err}");
-                                }
-                            }
-                            Err(err) => log::warn!("diagnostics local command socket error: {err}"),
-                        }
-                    }
-                }
-            }
-        })
-    };
+    let local_control = spawn_local_diagnostics_control(
+        control_socket,
+        Some((transport.clone(), dest_hash)),
+        diagnostic_state.clone(),
+        cancel.clone(),
+    );
 
     let network_control = {
         let transport = transport.clone();
@@ -664,7 +683,7 @@ async fn start_diagnostics_control(
                                 if ev.app_data.as_slice() != DIAGNOSTICS_PORT_TAG {
                                     continue;
                                 }
-                                let peer = ev.destination.lock().await.desc.clone();
+                                let peer = ev.destination.lock().await.desc;
                                 if peer.address_hash == dest_hash {
                                     continue;
                                 }
@@ -704,6 +723,90 @@ async fn start_diagnostics_control(
     Ok(vec![local_control, network_control, auto_link, reannounce])
 }
 
+fn spawn_local_diagnostics_control(
+    control_socket: UdpSocket,
+    mesh_control: Option<(Arc<Mutex<Transport>>, AddressHash)>,
+    diagnostic_state: Arc<DiagnosticState>,
+    cancel: CancellationToken,
+) -> JoinHandle<()> {
+    tokio::spawn(async move {
+        let mut buf = [0u8; MAX_LOCAL_DIAGNOSTIC_REQUEST_BYTES];
+        loop {
+            tokio::select! {
+                _ = cancel.cancelled() => break,
+                result = control_socket.recv_from(&mut buf) => {
+                    match result {
+                        Ok((len, source)) => {
+                            let response = handle_local_diagnostic_request(
+                                &buf[..len],
+                                mesh_control.as_ref(),
+                                &diagnostic_state,
+                            ).await;
+                            if let Err(err) = control_socket.send_to(response.as_bytes(), source).await {
+                                log::warn!("diagnostics local response error: {err}");
+                            }
+                        }
+                        Err(err) => log::warn!("diagnostics local command socket error: {err}"),
+                    }
+                }
+            }
+        }
+    })
+}
+
+async fn handle_local_diagnostic_request(
+    payload: &[u8],
+    mesh_control: Option<&(Arc<Mutex<Transport>>, AddressHash)>,
+    diagnostic_state: &DiagnosticState,
+) -> String {
+    match parse_local_diagnostic_request(payload) {
+        Ok(LocalDiagnosticRequest::Enable(seconds)) => {
+            match DiagnosticCommand::enable(new_command_id(), seconds) {
+                Ok(command) => {
+                    diagnostic_state.apply_once(&command);
+                    if let Some((transport, dest_hash)) = mesh_control {
+                        transport
+                            .lock()
+                            .await
+                            .send_to_in_links(dest_hash, &command.encode())
+                            .await;
+                        log::warn!(
+                            "diagnostics peer-hash tracking enabled locally for {seconds}s and announced across the diagnostic mesh"
+                        );
+                    } else {
+                        log::warn!("diagnostics peer-hash tracking enabled locally for {seconds}s");
+                    }
+                    format_diagnostic_status(diagnostic_state)
+                }
+                Err(err) => format!("ERR {err}\n"),
+            }
+        }
+        Ok(LocalDiagnosticRequest::Disable) => match DiagnosticCommand::disable(new_command_id()) {
+            Ok(command) => {
+                diagnostic_state.apply_once(&command);
+                if let Some((transport, dest_hash)) = mesh_control {
+                    transport
+                        .lock()
+                        .await
+                        .send_to_in_links(dest_hash, &command.encode())
+                        .await;
+                    log::warn!(
+                        "diagnostics peer-hash tracking disabled locally and announced across the diagnostic mesh"
+                    );
+                } else {
+                    log::warn!("diagnostics peer-hash tracking disabled locally");
+                }
+                format_diagnostic_status(diagnostic_state)
+            }
+            Err(err) => format!("ERR {err}\n"),
+        },
+        Ok(LocalDiagnosticRequest::Status) => format_diagnostic_status(diagnostic_state),
+        Ok(LocalDiagnosticRequest::Recent(limit)) => format_recent_records(diagnostic_state, limit),
+        Err(err) => format!("ERR {err}\n"),
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
 fn accept_payload(
     data: &[u8],
     source: PacketSource,
@@ -720,27 +823,19 @@ fn accept_payload(
             if let Some(peer_hash) = remote_peer_hash {
                 if diagnostic_state.record_remote(peer_hash, channel.port, &event) {
                     log::debug!(
-                        "diagnostics recorded peer={} uid={} callsign={:?} type={} channel_port={}",
-                        peer_hash,
-                        event.uid,
-                        event.callsign,
-                        event.event_type,
-                        channel.port
+                        "diagnostics recorded remote CoT metadata on channel_port={}",
+                        channel.port,
                     );
                 }
             }
             if let Some(record) = location_state.record(source, channel.port, &event) {
                 let known_locations = location_state.len();
                 log::debug!(
-                    "atak-plugin:{}:{} CoT source={:?} uid={} callsign={:?} type={} lat={} lon={} recorded_port={} updated_at={:?} known_locations={}",
+                    "atak-plugin:{}:{} CoT source={:?} type={} recorded_port={} updated_at={:?} known_locations={}",
                     channel.name,
                     channel.port,
                     record.source,
-                    record.uid,
-                    record.callsign,
                     record.event_type,
-                    record.point.lat,
-                    record.point.lon,
                     record.channel_port,
                     record.updated_at,
                     known_locations
@@ -748,10 +843,9 @@ fn accept_payload(
                 location_counter.fetch_add(1, Ordering::Relaxed);
             } else {
                 log::debug!(
-                    "atak-plugin:{}:{} accepted valid non-location CoT uid={} type={} source={:?}",
+                    "atak-plugin:{}:{} accepted valid non-location CoT type={} source={:?}",
                     channel.name,
                     channel.port,
-                    event.uid,
                     event.event_type,
                     source
                 );
@@ -790,6 +884,9 @@ fn new_command_id() -> String {
 }
 
 fn parse_local_diagnostic_request(payload: &[u8]) -> Result<LocalDiagnosticRequest, String> {
+    if payload.len() >= MAX_LOCAL_DIAGNOSTIC_REQUEST_BYTES || payload.len() > MAX_COMMAND_BYTES {
+        return Err("local diagnostics command is too large".to_string());
+    }
     let text = std::str::from_utf8(payload)
         .map_err(|_| "local diagnostics command is not UTF-8".to_string())?;
     let fields: Vec<&str> = text.split_whitespace().collect();
@@ -939,5 +1036,19 @@ mod tests {
         ));
         assert!(parse_local_diagnostic_request(b"enable 0").is_err());
         assert!(parse_local_diagnostic_request(b"recent 21").is_err());
+        assert!(parse_local_diagnostic_request(&[0xff]).is_err());
+        assert!(
+            parse_local_diagnostic_request(&vec![b'a'; MAX_LOCAL_DIAGNOSTIC_REQUEST_BYTES])
+                .is_err()
+        );
+    }
+
+    #[test]
+    fn diagnostics_control_listen_requires_loopback_without_override() {
+        let loopback: SocketAddr = "127.0.0.1:19001".parse().unwrap();
+        let non_loopback: SocketAddr = "0.0.0.0:19001".parse().unwrap();
+        assert!(validate_diagnostics_control_listen(loopback, false).is_ok());
+        assert!(validate_diagnostics_control_listen(non_loopback, false).is_err());
+        assert!(validate_diagnostics_control_listen(non_loopback, true).is_ok());
     }
 }

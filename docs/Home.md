@@ -6,7 +6,7 @@ The Kaonic ATAK Plugin is a Kaonic-side service that carries ATAK Cursor-on-Targ
 
 - [Design and safety](Design-and-Safety.md) — architecture, supported traffic, location parsing, diagnostic data boundaries, and hardware boundaries.
 - [Configuration](Configuration.md) — interface selection, forwarding modes, diagnostic-control commands, and service configuration.
-- [Diagnostic peer-hash tracking](Diagnostics.md) — network-wide toggle behavior and the integration point for a future diagnostics plugin.
+- [Diagnostic peer-hash tracking](Diagnostics.md) — local toggle behavior, explicit trusted-mesh propagation, and the integration point for a future diagnostics plugin.
 - [Build and install](Build-and-Install.md) — building the ARMv7 binary and packaging a Kaonic plugin ZIP.
 - [Testing](Testing.md) — local validation and two-Kaonic end-to-end testing.
 - [Change log](Change-Log.md) — packaged release notes and validation status.
@@ -20,7 +20,7 @@ The custom plugin still needs hardware validation before operational deployment:
 - installation and startup testing on the current Kaonic image;
 - real ATAK phone ingress testing;
 - two-Kaonic radio delivery testing;
-- diagnostic enable/disable propagation and loopback diagnostics-query testing.
+- loopback diagnostics-query testing and trusted-mesh enable/disable propagation when explicitly enabled.
 
 ## Supported ATAK channels
 

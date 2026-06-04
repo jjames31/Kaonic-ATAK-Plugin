@@ -10,7 +10,6 @@ use std::time::Duration;
 
 use clap::Parser;
 use crc32fast::hash as crc32_hash;
-use env_logger;
 use http::{AppState, SharedSettings};
 use kaonic_gateway::gateway_reticulum::GatewayReticulum;
 use kaonic_gateway::local_https;
@@ -20,11 +19,9 @@ use kaonic_gateway::radio::{
 };
 use kaonic_gateway::settings::Settings;
 use kaonic_vpn::{VpnConfig, VpnRuntime};
-use log;
 use reticulum::identity::PrivateIdentity;
 use reticulum::transport::{TimerConfig, Transport, TransportConfig};
 use std::sync::Mutex;
-use tokio;
 use tokio_util::sync::CancellationToken;
 
 const DEFAULT_DB_PATH: &str = "kaonic-gateway.db";

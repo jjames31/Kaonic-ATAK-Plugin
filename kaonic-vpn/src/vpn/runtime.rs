@@ -441,7 +441,7 @@ impl VpnRuntime {
 
     fn rebuild_router(&self) {
         let table = RouteTable::build(
-            self.peers.all().into_iter(),
+            self.peers.all(),
             now_secs(),
             self.destination,
             self.local_tunnel_ip,
@@ -635,14 +635,14 @@ fn spawn_announce_rx(
                 _ = cancel.cancelled() => break,
                 recv = rx.recv() => match recv {
                     Ok(announce) => {
-                        let desc = announce.destination.lock().await.desc.clone();
+                        let desc = announce.destination.lock().await.desc;
                         let app_data = announce.app_data.as_slice();
                         if !is_announce(app_data) {
                             continue;
                         }
                         match decode_announce(app_data) {
                             Ok(routes) => {
-                                if !runtime.handle_peer_announce(desc.clone(), routes) {
+                                if !runtime.handle_peer_announce(desc, routes) {
                                     continue;
                                 }
                                 // Announces are the primary trigger for opening

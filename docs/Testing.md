@@ -7,7 +7,7 @@ Testing should establish four things before the plugin is used operationally:
 1. the service starts on the intended Kaonic network interface;
 2. valid ATAK traffic is carried through the radio path without modification;
 3. the plugin does not transmit onto unrelated local networks or interact with attached hardware;
-4. optional diagnostic peer-hash tracking stays off by default and propagates enable/disable commands only during deliberate testing.
+4. optional diagnostic peer-hash tracking stays off by default and propagates enable/disable commands only when unauthenticated mesh control is explicitly enabled for deliberate trusted-mesh testing.
 
 ## Build-time checks
 
@@ -109,13 +109,19 @@ Run this test only after ordinary ATAK delivery works. Diagnostics must remain d
    printf 'status\n' | nc -u -w1 127.0.0.1 19001
    ```
 
-2. On Kaonic A, request a short network-wide enable window:
+2. Enable unauthenticated diagnostics mesh control on both test Kaonics. This is for trusted bench testing only:
+
+   ```ini
+   Environment="KAONIC_ATAK_ENABLE_UNAUTHENTICATED_DIAGNOSTICS_MESH_CONTROL=true"
+   ```
+
+3. On Kaonic A, request a short network-wide enable window:
 
    ```bash
    printf 'enable 120\n' | nc -u -w1 127.0.0.1 19001
    ```
 
-3. On Kaonic B, confirm that the control command propagated:
+4. On Kaonic B, confirm that the control command propagated:
 
    ```bash
    printf 'status\n' | nc -u -w1 127.0.0.1 19001
@@ -123,7 +129,7 @@ Run this test only after ordinary ATAK delivery works. Diagnostics must remain d
 
    `enabled=true` should be reported with a decreasing `remaining_seconds` value.
 
-4. Generate ATAK location or chat CoT traffic through the radio path. On the receiving node, query recent diagnostics:
+5. Generate ATAK location or chat CoT traffic through the radio path. On the receiving node, query recent diagnostics:
 
    ```bash
    printf 'recent 10\n' | nc -u -w1 127.0.0.1 19001
@@ -131,17 +137,17 @@ Run this test only after ordinary ATAK delivery works. Diagnostics must remain d
 
    Each received record should include the Reticulum peer hash and the CoT UID/type, with latitude and longitude only when supplied by the CoT event.
 
-5. Disable tracking from either node and confirm that the disabled state propagates:
+6. Disable tracking from either node and confirm that the disabled state propagates:
 
    ```bash
    printf 'disable\n' | nc -u -w1 127.0.0.1 19001
    ```
 
-6. Generate additional CoT traffic and verify that the retained-record count does not increase after disable.
+7. Generate additional CoT traffic and verify that the retained-record count remains zero after disable.
 
-7. Capture ATAK traffic before, during, and after diagnostics and confirm that the forwarded ATAK packet bytes remain unchanged.
+8. Capture ATAK traffic before, during, and after diagnostics and confirm that the forwarded ATAK packet bytes remain unchanged.
 
-The current control plane is for trusted testing only; it is not an authorization validation test for operational deployment.
+The current mesh control plane is for trusted testing only; it is not an authorization validation test for operational deployment.
 
 ## Compatibility-mode test
 

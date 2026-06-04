@@ -19,7 +19,7 @@ The plugin has an implementation baseline for validated CoT forwarding, location
 
 - Forwards validated ATAK CoT traffic between the local ATAK network and Reticulum.
 - Reads location-bearing CoT messages for local position tracking without modifying the transmitted packet bytes.
-- Supports a dormant-by-default diagnostic control channel that can temporarily record `Reticulum peer hash -> CoT UID/callsign/event` associations across participating plugin nodes.
+- Supports dormant-by-default diagnostic tracking that can temporarily record `Reticulum peer hash -> CoT UID/callsign/event` associations, with unauthenticated mesh-wide propagation available only through an explicit trusted-test override.
 - Exposes a loopback-only local diagnostics command interface for later integration by a dedicated diagnostics plugin.
 - Sends multicast traffic only on the selected ATAK-facing interface.
 - Fails closed when it cannot safely identify that interface.
