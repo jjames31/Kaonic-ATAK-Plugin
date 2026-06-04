@@ -3,10 +3,14 @@ use std::net::{Ipv4Addr, SocketAddr};
 use std::process;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use clap::Parser;
 use cot::{parse_cot_payload, LocationState, PacketSource};
+use diagnostics::{
+    DiagnosticAction, DiagnosticCommand, DiagnosticRecord, DiagnosticState, DEFAULT_ENABLE_SECONDS,
+    MAX_ENABLE_SECONDS,
+};
 use interface::{
     load_interface_candidates, select_local_interface, InterfaceSelection, LocalInterface,
 };
@@ -15,17 +19,19 @@ use kaonic_gateway::radio::{
 };
 use kaonic_gateway::settings::Settings;
 use multicast::{open_multicast_sockets, AtakChannel, ATAK_CHANNELS};
-use rand::rngs::OsRng;
+use rand::{rngs::OsRng, RngCore};
 use reticulum::destination::link::LinkEvent;
 use reticulum::destination::DestinationName;
 use reticulum::hash::AddressHash;
 use reticulum::identity::PrivateIdentity;
 use reticulum::transport::{TimerConfig, Transport, TransportConfig};
+use tokio::net::UdpSocket;
 use tokio::sync::Mutex;
 use tokio::task::JoinHandle;
 use tokio_util::sync::CancellationToken;
 
 mod cot;
+mod diagnostics;
 mod interface;
 mod multicast;
 
@@ -35,6 +41,11 @@ const DEFAULT_SEED_KEY: &str = "atak_plugin_identity_seed";
 const ATAK_INTERFACE_ENV: &str = "KAONIC_ATAK_INTERFACE";
 const ATAK_INTERFACE_IP_ENV: &str = "KAONIC_ATAK_INTERFACE_IP";
 const OPAQUE_FORWARDING_ENV: &str = "KAONIC_ATAK_ALLOW_OPAQUE_FORWARDING";
+const DIAGNOSTICS_CONTROL_LISTEN_ENV: &str = "KAONIC_ATAK_DIAGNOSTICS_CONTROL_LISTEN";
+const DEFAULT_DIAGNOSTICS_CONTROL_LISTEN: &str = "127.0.0.1:19001";
+const DIAGNOSTICS_DEST_NAME: &str = "atak.diag.control";
+const DIAGNOSTICS_PORT_TAG: &[u8] = b"atak-diag-control-v1";
+const MAX_LOCAL_RECENT_RECORDS: usize = 20;
 
 #[derive(Parser)]
 #[command(name = "kaonic-atak-plugin", version)]
@@ -59,6 +70,11 @@ struct Command {
     /// Explicit compatibility mode: forward payloads that are not valid CoT XML.
     #[arg(long, default_value_t = false)]
     allow_unvalidated_payloads: bool,
+
+    /// Loopback address used by a local diagnostics plugin or CLI to enable and inspect tracking.
+    /// Overrides KAONIC_ATAK_DIAGNOSTICS_CONTROL_LISTEN.
+    #[arg(long, value_name = "IPv4:PORT")]
+    diagnostics_control_listen: Option<SocketAddr>,
 }
 
 #[derive(Default)]
@@ -69,6 +85,14 @@ struct BridgeMetrics {
     invalid_remote_packets: AtomicU64,
     local_locations: AtomicU64,
     remote_locations: AtomicU64,
+}
+
+#[derive(Debug, Clone, Copy)]
+enum LocalDiagnosticRequest {
+    Enable(u64),
+    Disable,
+    Status,
+    Recent(usize),
 }
 
 #[tokio::main]
@@ -106,6 +130,18 @@ async fn main() -> Result<(), process::ExitCode> {
         );
     } else {
         log::info!("safe forwarding mode enabled: invalid non-CoT payloads will be dropped");
+    }
+
+    let diagnostics_control_listen = configured_socket_addr(
+        cmd.diagnostics_control_listen,
+        DIAGNOSTICS_CONTROL_LISTEN_ENV,
+    )?
+    .unwrap_or_else(|| DEFAULT_DIAGNOSTICS_CONTROL_LISTEN.parse().unwrap());
+    if !diagnostics_control_listen.ip().is_loopback() {
+        log::warn!(
+            "diagnostics local control socket is not bound to loopback: {}",
+            diagnostics_control_listen
+        );
     }
 
     let db_path =
@@ -178,7 +214,20 @@ async fn main() -> Result<(), process::ExitCode> {
     spawn_keepalive(radio_client, cancel.clone());
 
     let location_state = Arc::new(LocationState::default());
-    let mut tasks = Vec::new();
+    let diagnostic_state = Arc::new(DiagnosticState::default());
+    let mut tasks = start_diagnostics_control(
+        transport.clone(),
+        id.clone(),
+        diagnostic_state.clone(),
+        diagnostics_control_listen,
+        cancel.clone(),
+    )
+    .await
+    .map_err(|err| {
+        log::error!("failed to start diagnostics control channel: {err}");
+        process::ExitCode::FAILURE
+    })?;
+
     for channel in ATAK_CHANNELS {
         let channel_tasks = start_bridge(
             transport.clone(),
@@ -186,6 +235,7 @@ async fn main() -> Result<(), process::ExitCode> {
             *channel,
             local_interface.clone(),
             location_state.clone(),
+            diagnostic_state.clone(),
             allow_unvalidated_payloads,
             cancel.clone(),
         )
@@ -234,6 +284,22 @@ fn configured_ipv4(
     }
 }
 
+fn configured_socket_addr(
+    cli_value: Option<SocketAddr>,
+    env_name: &str,
+) -> Result<Option<SocketAddr>, process::ExitCode> {
+    if cli_value.is_some() {
+        return Ok(cli_value);
+    }
+    match non_empty_env(env_name) {
+        Some(value) => value.parse::<SocketAddr>().map(Some).map_err(|err| {
+            log::error!("invalid {env_name} value '{value}': {err}");
+            process::ExitCode::FAILURE
+        }),
+        None => Ok(None),
+    }
+}
+
 fn env_flag_enabled(name: &str) -> bool {
     non_empty_env(name)
         .map(|value| {
@@ -251,6 +317,7 @@ async fn start_bridge(
     channel: AtakChannel,
     local_interface: LocalInterface,
     location_state: Arc<LocationState>,
+    diagnostic_state: Arc<DiagnosticState>,
     allow_unvalidated_payloads: bool,
     cancel: CancellationToken,
 ) -> Result<Vec<JoinHandle<()>>, Box<dyn std::error::Error + Send + Sync>> {
@@ -286,6 +353,7 @@ async fn start_bridge(
         let cancel = cancel.clone();
         let udp_rx = sockets.receiver.clone();
         let location_state = location_state.clone();
+        let diagnostic_state = diagnostic_state.clone();
         tokio::spawn(async move {
             let mut buf = vec![0u8; 65535];
             loop {
@@ -298,8 +366,10 @@ async fn start_bridge(
                                 if !accept_payload(
                                     data,
                                     PacketSource::LocalUdp,
+                                    None,
                                     channel,
                                     &location_state,
+                                    &diagnostic_state,
                                     allow_unvalidated_payloads,
                                     &metrics.invalid_local_packets,
                                     &metrics.local_locations,
@@ -326,6 +396,7 @@ async fn start_bridge(
         let target = sockets.target;
         let peer_hashes = peer_hashes.clone();
         let location_state = location_state.clone();
+        let diagnostic_state = diagnostic_state.clone();
         tokio::spawn(async move {
             let mut events = transport.lock().await.out_link_events();
             loop {
@@ -349,11 +420,14 @@ async fn start_bridge(
                                     }
                                     LinkEvent::Data(payload) => {
                                         let data = payload.as_slice();
+                                        let remote_peer_hash = ev.address_hash.to_string();
                                         if !accept_payload(
                                             data,
                                             PacketSource::RemoteReticulum,
+                                            Some(&remote_peer_hash),
                                             channel,
                                             &location_state,
+                                            &diagnostic_state,
                                             allow_unvalidated_payloads,
                                             &metrics.invalid_remote_packets,
                                             &metrics.remote_locations,
@@ -436,17 +510,225 @@ async fn start_bridge(
     Ok(vec![udp_to_rns, rns_to_udp, auto_link, reannounce])
 }
 
+async fn start_diagnostics_control(
+    transport: Arc<Mutex<Transport>>,
+    identity: PrivateIdentity,
+    diagnostic_state: Arc<DiagnosticState>,
+    local_control_addr: SocketAddr,
+    cancel: CancellationToken,
+) -> Result<Vec<JoinHandle<()>>, Box<dyn std::error::Error + Send + Sync>> {
+    let peer_hashes = Arc::new(Mutex::new(HashSet::<AddressHash>::new()));
+    let destination = transport
+        .lock()
+        .await
+        .add_destination(identity, DestinationName::new("kaonic", DIAGNOSTICS_DEST_NAME))
+        .await;
+    let dest_hash = destination.lock().await.desc.address_hash;
+
+    if let Ok(pkt) = destination
+        .lock()
+        .await
+        .announce(OsRng, Some(DIAGNOSTICS_PORT_TAG))
+    {
+        transport.lock().await.send_packet(pkt).await;
+    }
+
+    let control_socket = UdpSocket::bind(local_control_addr).await?;
+    log::info!(
+        "atak-plugin:diagnostics listening locally on {} dest={} (disabled by default)",
+        local_control_addr,
+        dest_hash
+    );
+
+    let local_control = {
+        let transport = transport.clone();
+        let cancel = cancel.clone();
+        let diagnostic_state = diagnostic_state.clone();
+        tokio::spawn(async move {
+            let mut buf = [0u8; 1024];
+            loop {
+                tokio::select! {
+                    _ = cancel.cancelled() => break,
+                    result = control_socket.recv_from(&mut buf) => {
+                        match result {
+                            Ok((len, source)) => {
+                                let response = match parse_local_diagnostic_request(&buf[..len]) {
+                                    Ok(LocalDiagnosticRequest::Enable(seconds)) => {
+                                        match DiagnosticCommand::enable(new_command_id(), seconds) {
+                                            Ok(command) => {
+                                                diagnostic_state.apply_once(&command);
+                                                transport.lock().await.send_to_in_links(&dest_hash, &command.encode()).await;
+                                                log::warn!("diagnostics peer-hash tracking enabled locally for {seconds}s and announced across the diagnostic mesh");
+                                                format_diagnostic_status(&diagnostic_state)
+                                            }
+                                            Err(err) => format!("ERR {err}\n"),
+                                        }
+                                    }
+                                    Ok(LocalDiagnosticRequest::Disable) => {
+                                        match DiagnosticCommand::disable(new_command_id()) {
+                                            Ok(command) => {
+                                                diagnostic_state.apply_once(&command);
+                                                transport.lock().await.send_to_in_links(&dest_hash, &command.encode()).await;
+                                                log::warn!("diagnostics peer-hash tracking disabled locally and announced across the diagnostic mesh");
+                                                format_diagnostic_status(&diagnostic_state)
+                                            }
+                                            Err(err) => format!("ERR {err}\n"),
+                                        }
+                                    }
+                                    Ok(LocalDiagnosticRequest::Status) => format_diagnostic_status(&diagnostic_state),
+                                    Ok(LocalDiagnosticRequest::Recent(limit)) => format_recent_records(&diagnostic_state, limit),
+                                    Err(err) => format!("ERR {err}\n"),
+                                };
+                                if let Err(err) = control_socket.send_to(response.as_bytes(), source).await {
+                                    log::warn!("diagnostics local response error: {err}");
+                                }
+                            }
+                            Err(err) => log::warn!("diagnostics local command socket error: {err}"),
+                        }
+                    }
+                }
+            }
+        })
+    };
+
+    let network_control = {
+        let transport = transport.clone();
+        let cancel = cancel.clone();
+        let peer_hashes = peer_hashes.clone();
+        let diagnostic_state = diagnostic_state.clone();
+        tokio::spawn(async move {
+            let mut events = transport.lock().await.out_link_events();
+            loop {
+                tokio::select! {
+                    _ = cancel.cancelled() => break,
+                    result = events.recv() => {
+                        match result {
+                            Ok(ev) => {
+                                if !peer_hashes.lock().await.contains(&ev.address_hash) {
+                                    continue;
+                                }
+                                match ev.event {
+                                    LinkEvent::Activated => {
+                                        log::info!("atak-plugin:diagnostics control link activated {}", ev.address_hash);
+                                    }
+                                    LinkEvent::Closed => {
+                                        peer_hashes.lock().await.remove(&ev.address_hash);
+                                        log::info!("atak-plugin:diagnostics control link closed {}", ev.address_hash);
+                                    }
+                                    LinkEvent::Data(payload) => {
+                                        match DiagnosticCommand::parse(payload.as_slice()) {
+                                            Ok(command) if diagnostic_state.apply_once(&command) => {
+                                                match command.action {
+                                                    DiagnosticAction::Enable { seconds } => {
+                                                        log::warn!("diagnostics peer-hash tracking enabled for {seconds}s by mesh control message received from {}", ev.address_hash);
+                                                    }
+                                                    DiagnosticAction::Disable => {
+                                                        log::warn!("diagnostics peer-hash tracking disabled by mesh control message received from {}", ev.address_hash);
+                                                    }
+                                                }
+                                                // Re-broadcast each new command once so it propagates through multi-hop plugin topologies.
+                                                transport.lock().await.send_to_in_links(&dest_hash, &command.encode()).await;
+                                            }
+                                            Ok(_) => {}
+                                            Err(err) => {
+                                                log::warn!("dropping invalid diagnostics control message from {}: {err}", ev.address_hash);
+                                            }
+                                        }
+                                    }
+                                    LinkEvent::Proof(_) => {}
+                                }
+                            }
+                            Err(tokio::sync::broadcast::error::RecvError::Lagged(skipped)) => {
+                                log::warn!("atak-plugin:diagnostics skipped {skipped} Reticulum link events");
+                            }
+                            Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
+                        }
+                    }
+                }
+            }
+        })
+    };
+
+    let auto_link = {
+        let transport = transport.clone();
+        let cancel = cancel.clone();
+        let peer_hashes = peer_hashes.clone();
+        tokio::spawn(async move {
+            let mut announces = transport.lock().await.recv_announces().await;
+            loop {
+                tokio::select! {
+                    _ = cancel.cancelled() => break,
+                    result = announces.recv() => {
+                        match result {
+                            Ok(ev) => {
+                                if ev.app_data.as_slice() != DIAGNOSTICS_PORT_TAG {
+                                    continue;
+                                }
+                                let peer = ev.destination.lock().await.desc.clone();
+                                if peer.address_hash == dest_hash {
+                                    continue;
+                                }
+                                peer_hashes.lock().await.insert(peer.address_hash);
+                                log::info!("atak-plugin:diagnostics auto-link -> {}", peer.address_hash);
+                                transport.lock().await.link(peer).await;
+                            }
+                            Err(tokio::sync::broadcast::error::RecvError::Lagged(skipped)) => {
+                                log::warn!("atak-plugin:diagnostics skipped {skipped} Reticulum announces");
+                            }
+                            Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
+                        }
+                    }
+                }
+            }
+        })
+    };
+
+    let reannounce = {
+        let transport = transport.clone();
+        let cancel = cancel.clone();
+        tokio::spawn(async move {
+            let mut tick = tokio::time::interval(Duration::from_secs(10));
+            loop {
+                tokio::select! {
+                    _ = cancel.cancelled() => break,
+                    _ = tick.tick() => {
+                        if let Ok(pkt) = destination.lock().await.announce(OsRng, Some(DIAGNOSTICS_PORT_TAG)) {
+                            transport.lock().await.send_packet(pkt).await;
+                        }
+                    }
+                }
+            }
+        })
+    };
+
+    Ok(vec![local_control, network_control, auto_link, reannounce])
+}
+
 fn accept_payload(
     data: &[u8],
     source: PacketSource,
+    remote_peer_hash: Option<&str>,
     channel: AtakChannel,
     location_state: &LocationState,
+    diagnostic_state: &DiagnosticState,
     allow_unvalidated_payloads: bool,
     invalid_counter: &AtomicU64,
     location_counter: &AtomicU64,
 ) -> bool {
     match parse_cot_payload(data) {
         Ok(event) => {
+            if let Some(peer_hash) = remote_peer_hash {
+                if diagnostic_state.record_remote(peer_hash, channel.port, &event) {
+                    log::debug!(
+                        "diagnostics recorded peer={} uid={} callsign={:?} type={} channel_port={}",
+                        peer_hash,
+                        event.uid,
+                        event.callsign,
+                        event.event_type,
+                        channel.port
+                    );
+                }
+            }
             if let Some(record) = location_state.record(source, channel.port, &event) {
                 let known_locations = location_state.len();
                 log::debug!(
@@ -497,6 +779,114 @@ fn accept_payload(
     }
 }
 
+fn new_command_id() -> String {
+    let timestamp = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or(Duration::ZERO)
+        .as_nanos();
+    let mut rng = OsRng;
+    let random = rng.next_u64();
+    format!("{timestamp:x}-{random:x}")
+}
+
+fn parse_local_diagnostic_request(payload: &[u8]) -> Result<LocalDiagnosticRequest, String> {
+    let text = std::str::from_utf8(payload)
+        .map_err(|_| "local diagnostics command is not UTF-8".to_string())?;
+    let fields: Vec<&str> = text.split_whitespace().collect();
+    match fields.as_slice() {
+        ["enable"] => Ok(LocalDiagnosticRequest::Enable(DEFAULT_ENABLE_SECONDS)),
+        ["enable", seconds] => {
+            let seconds = seconds
+                .parse::<u64>()
+                .map_err(|_| "enable duration must be an integer number of seconds".to_string())?;
+            if !(1..=MAX_ENABLE_SECONDS).contains(&seconds) {
+                return Err(format!(
+                    "enable duration must be between 1 and {MAX_ENABLE_SECONDS} seconds"
+                ));
+            }
+            Ok(LocalDiagnosticRequest::Enable(seconds))
+        }
+        ["disable"] => Ok(LocalDiagnosticRequest::Disable),
+        ["status"] => Ok(LocalDiagnosticRequest::Status),
+        ["recent"] => Ok(LocalDiagnosticRequest::Recent(10)),
+        ["recent", limit] => {
+            let limit = limit
+                .parse::<usize>()
+                .map_err(|_| "recent limit must be an integer".to_string())?;
+            if !(1..=MAX_LOCAL_RECENT_RECORDS).contains(&limit) {
+                return Err(format!(
+                    "recent limit must be between 1 and {MAX_LOCAL_RECENT_RECORDS}"
+                ));
+            }
+            Ok(LocalDiagnosticRequest::Recent(limit))
+        }
+        _ => Err("expected: enable [seconds], disable, status, or recent [1-20]".to_string()),
+    }
+}
+
+fn format_diagnostic_status(diagnostic_state: &DiagnosticState) -> String {
+    let status = diagnostic_state.status();
+    format!(
+        "OK enabled={} remaining_seconds={} records={}\n",
+        status.enabled, status.remaining_seconds, status.record_count
+    )
+}
+
+fn format_recent_records(diagnostic_state: &DiagnosticState, limit: usize) -> String {
+    let records = diagnostic_state.recent(limit);
+    let mut output = format_diagnostic_status(diagnostic_state);
+    for record in records {
+        output.push_str(&format_diagnostic_record(&record));
+    }
+    output
+}
+
+fn format_diagnostic_record(record: &DiagnosticRecord) -> String {
+    let observed_unix_ms = record
+        .observed_at
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or(Duration::ZERO)
+        .as_millis();
+    let callsign = sanitize_field(record.callsign.as_deref().unwrap_or("-"));
+    let uid = sanitize_field(&record.uid);
+    let event_type = sanitize_field(&record.event_type);
+    match record.point {
+        Some((lat, lon)) => format!(
+            "RECORD unix_ms={} peer={} port={} uid={} callsign={} type={} lat={} lon={}\n",
+            observed_unix_ms,
+            record.remote_peer_hash,
+            record.channel_port,
+            uid,
+            callsign,
+            event_type,
+            lat,
+            lon
+        ),
+        None => format!(
+            "RECORD unix_ms={} peer={} port={} uid={} callsign={} type={} lat=- lon=-\n",
+            observed_unix_ms,
+            record.remote_peer_hash,
+            record.channel_port,
+            uid,
+            callsign,
+            event_type
+        ),
+    }
+}
+
+fn sanitize_field(value: &str) -> String {
+    value
+        .chars()
+        .map(|character| {
+            if character.is_ascii_graphic() && character != '=' {
+                character
+            } else {
+                '_'
+            }
+        })
+        .collect()
+}
+
 fn spawn_keepalive(radio_client: SharedRadioClient, cancel: CancellationToken) {
     tokio::spawn(async move {
         let mut interval = tokio::time::interval(Duration::from_secs(30));
@@ -531,4 +921,23 @@ async fn shutdown_signal(cancel: CancellationToken) {
     }
     log::info!("shutting down");
     cancel.cancel();
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn parses_local_diagnostics_requests() {
+        assert!(matches!(
+            parse_local_diagnostic_request(b"enable 120").unwrap(),
+            LocalDiagnosticRequest::Enable(120)
+        ));
+        assert!(matches!(
+            parse_local_diagnostic_request(b"disable").unwrap(),
+            LocalDiagnosticRequest::Disable
+        ));
+        assert!(parse_local_diagnostic_request(b"enable 0").is_err());
+        assert!(parse_local_diagnostic_request(b"recent 21").is_err());
+    }
 }
