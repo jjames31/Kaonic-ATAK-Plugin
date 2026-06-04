@@ -47,3 +47,8 @@ deploy/kaonic-atak-plugin/kaonic-atak-plugin.zip
 ## Reference implementation
 
 Beechat's `kaonic-atak-bridge` in `kaonic-gateway` is used as an upstream reference for Kaonic transport and packaging patterns. This repository contains the custom implementation for this project.
+
+
+
+
+# - [**Download**](https://github.com/jjames31/Kaonic-ATAK-Plugin/tree/main/Builds)
