@@ -2,11 +2,12 @@
 
 ## Purpose
 
-Testing should establish three things before the plugin is used operationally:
+Testing should establish four things before the plugin is used operationally:
 
 1. the service starts on the intended Kaonic network interface;
 2. valid ATAK traffic is carried through the radio path without modification;
-3. the plugin does not transmit onto unrelated local networks or interact with attached hardware.
+3. the plugin does not transmit onto unrelated local networks or interact with attached hardware;
+4. optional diagnostic peer-hash tracking stays off by default and propagates enable/disable commands only during deliberate testing.
 
 ## Build-time checks
 
@@ -17,6 +18,8 @@ cargo fmt --check
 cargo test -p kaonic-atak-plugin
 cargo check -p kaonic-atak-plugin
 ```
+
+The unit tests include diagnostic command parsing, duplicate-command suppression, and confirmation that peer-hash records are captured only while diagnostics are enabled.
 
 For a Kaonic deployment build, also create the ARMv7 release artifact:
 
@@ -43,6 +46,18 @@ When the intended ATAK network uses a different address, configure it explicitly
 
 ```ini
 Environment="KAONIC_ATAK_INTERFACE_IP=<kaonic-atak-facing-ip>"
+```
+
+The diagnostic local-control socket should bind to loopback by default and report disabled state:
+
+```bash
+printf 'status\n' | nc -u -w1 127.0.0.1 19001
+```
+
+Expected form:
+
+```text
+OK enabled=false remaining_seconds=0 records=0
 ```
 
 ## Local ATAK ingress test
@@ -84,6 +99,50 @@ Procedure:
 5. Repeat the test in the reverse direction.
 6. Monitor unrelated active interfaces and confirm that the plugin does not emit ATAK multicast traffic onto them.
 
+## Diagnostic control-plane test
+
+Run this test only after ordinary ATAK delivery works. Diagnostics must remain disabled during normal forwarding validation.
+
+1. On both Kaonics, verify the initial state:
+
+   ```bash
+   printf 'status\n' | nc -u -w1 127.0.0.1 19001
+   ```
+
+2. On Kaonic A, request a short network-wide enable window:
+
+   ```bash
+   printf 'enable 120\n' | nc -u -w1 127.0.0.1 19001
+   ```
+
+3. On Kaonic B, confirm that the control command propagated:
+
+   ```bash
+   printf 'status\n' | nc -u -w1 127.0.0.1 19001
+   ```
+
+   `enabled=true` should be reported with a decreasing `remaining_seconds` value.
+
+4. Generate ATAK location or chat CoT traffic through the radio path. On the receiving node, query recent diagnostics:
+
+   ```bash
+   printf 'recent 10\n' | nc -u -w1 127.0.0.1 19001
+   ```
+
+   Each received record should include the Reticulum peer hash and the CoT UID/type, with latitude and longitude only when supplied by the CoT event.
+
+5. Disable tracking from either node and confirm that the disabled state propagates:
+
+   ```bash
+   printf 'disable\n' | nc -u -w1 127.0.0.1 19001
+   ```
+
+6. Generate additional CoT traffic and verify that the retained-record count does not increase after disable.
+
+7. Capture ATAK traffic before, during, and after diagnostics and confirm that the forwarded ATAK packet bytes remain unchanged.
+
+The current control plane is for trusted testing only; it is not an authorization validation test for operational deployment.
+
 ## Compatibility-mode test
 
 Compatibility mode should be tested separately from normal operation. Enable it only when a test requires traffic the parser cannot validate:
@@ -103,4 +162,5 @@ The following results should be documented after physical testing:
 - ATAK version and device type used for ingress testing;
 - radio link configuration used for the two-device test;
 - whether any duplicate or reflected packets were observed;
-- whether a status or diagnostics interface is needed for decoded location data.
+- whether diagnostics enable/disable propagated to each participating Kaonic;
+- whether future diagnostic telemetry needs persistence, visualization, or signed control authorization.
