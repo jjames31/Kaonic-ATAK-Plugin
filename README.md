@@ -35,6 +35,7 @@ The plugin has an implementation baseline for validated CoT forwarding, location
 | Addition | Why it matters |
 | --- | --- |
 | Replaces the default ATAK bridge service | The custom bridge conflicts with and disables `kaonic-atak-bridge.service` when started, preventing two services from handling the same ATAK multicast channels at the same time. |
+| Verbose SSH-visible service status | Connection setup, Reticulum peer/link activity, packet validation decisions, and transport errors are written to the journal so testing can be observed directly from the Kaonic command line. |
 | CoT validation before forwarding | Malformed or unrelated local UDP data is dropped by default instead of consuming radio bandwidth. An explicit compatibility option is available when opaque forwarding is required for testing. |
 | Location-aware parsing | The service can read UID, callsign, event type, position, accuracy, altitude, and stale/time metadata from valid CoT events without changing what ATAK receives. This makes later diagnostics possible without inventing a separate position protocol. |
 | Bounded local and remote location state | Recent location observations can be inspected during development without allowing the service's memory usage to grow indefinitely. |
@@ -44,12 +45,23 @@ The plugin has an implementation baseline for validated CoT forwarding, location
 | Fail-closed interface selection | If the plugin cannot safely determine which interface belongs to the ATAK connection, it refuses to start instead of potentially transmitting data onto the wrong network. |
 | Network-only safety boundary | The service does not probe USB, UART, GPS receivers, cameras, drones, or other attached hardware. Connecting a peripheral does not automatically make it a data source for the bridge. |
 
+## Monitoring over SSH
+
+The packaged service sends connection and error output to the systemd journal. Once installed on a Kaonic, follow the bridge live with:
+
+```bash
+journalctl -fu kaonic-atak-plugin.service -o short-iso
+```
+
+The [SSH status and troubleshooting guide](docs/SSH-Status-and-Troubleshooting.md) documents healthy startup messages, two-Kaonic testing, common failures, log verbosity overrides, and how to temporarily correlate received ATAK contacts with Reticulum peers.
+
 ## Documentation
 
 - [Wiki](https://github.com/jjames31/Kaonic-ATAK-Plugin/wiki)
 - [Documentation home](docs/Home.md)
 - [Design and safety](docs/Design-and-Safety.md)
 - [Configuration](docs/Configuration.md)
+- [SSH status and troubleshooting](docs/SSH-Status-and-Troubleshooting.md)
 - [Diagnostic peer-hash tracking](docs/Diagnostics.md)
 - [Build and install](docs/Build-and-Install.md)
 - [Testing](docs/Testing.md)
@@ -69,7 +81,7 @@ deploy/kaonic-atak-plugin/kaonic-atak-plugin.zip
 
 ## Reference implementation
 
-Beechat's `kaonic-atak-bridge` in `kaonic-gateway` is used as an upstream reference for Kaonic transport and packaging patterns. This repository keeps that transport role, then adds the validation, interface isolation, diagnostic hooks, and service replacement behavior needed for this project's testing and future tools.
+Beechat's `kaonic-atak-bridge` in `kaonic-gateway` is used as an upstream reference for Kaonic transport and packaging patterns. This repository keeps that transport role, then adds the validation, interface isolation, diagnostic hooks, verbose operational logging, and service replacement behavior needed for this project's testing and future tools.
 
 ## Download
 
