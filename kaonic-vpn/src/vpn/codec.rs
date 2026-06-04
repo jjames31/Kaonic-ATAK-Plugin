@@ -136,12 +136,14 @@ pub fn encode_hello(routes: &[Ipv4Cidr]) -> Result<Vec<u8>, CodecError> {
     })
 }
 
+#[allow(dead_code)]
 pub fn encode_routes(routes: &[Ipv4Cidr]) -> Result<Vec<u8>, CodecError> {
     encode_ctrl(&Ctrl::Routes {
         routes: routes.iter().copied().map(Subnet::from_cidr).collect(),
     })
 }
 
+#[allow(dead_code)]
 pub fn encode_ping() -> Vec<u8> {
     // Ping is tiny & never fails — serialise once into a local buf.
     encode_ctrl(&Ctrl::Ping).expect("encode ping")

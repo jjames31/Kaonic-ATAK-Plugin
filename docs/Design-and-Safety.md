@@ -52,13 +52,14 @@ A Reticulum peer hash identifies the radio/plugin endpoint that delivered a mess
 Diagnostic tracking has these boundaries:
 
 - disabled by default;
-- enabled or disabled across participating plugin nodes through the separate `kaonic.atak.diag.control` Reticulum destination;
+- enabled or disabled locally through a restrictive Unix control socket;
+- optionally propagated across participating plugin nodes through the separate `kaonic.atak.diag.control` Reticulum destination when unauthenticated mesh control is explicitly enabled for a trusted test mesh;
 - bounded by an automatic enable timeout and an in-memory record limit;
 - records remote peer hash, CoT UID/callsign/type, channel port, and optional point only while enabled;
 - never modifies the ATAK packet bytes sent to the connected ATAK device;
-- exposes local control and recent-record access on a loopback UDP socket for use by a future diagnostics plugin.
+- exposes local control and recent-record access on a `0600` Unix datagram socket for use by a future diagnostics plugin, with UDP compatibility available only when explicitly configured.
 
-The first implementation is intended for trusted development/test meshes. It does not yet provide application-level signed authorization of network-wide diagnostic commands. A later diagnostics plugin should add authorization before enabling this functionality in a mesh that may contain untrusted participants. See [Diagnostic Peer-Hash Tracking](Diagnostics.md) for the control protocol and integration point.
+The first implementation is intended for local diagnostics and trusted development/test meshes. It does not yet provide application-level signed authorization of network-wide diagnostic commands, so mesh-wide control remains off unless explicitly enabled for a bench test. A later diagnostics plugin should add authorization before enabling this functionality in a mesh that may contain untrusted participants. See [Diagnostic Peer-Hash Tracking](Diagnostics.md) for the control protocol and integration point.
 
 ## Safety boundaries
 
@@ -79,7 +80,7 @@ The plugin sends ATAK multicast traffic only on one selected local interface. It
 
 When no interface is explicitly configured, automatic selection succeeds only when exactly one suitable address exists on the expected `192.168.10.0/24` local ATAK network. If there is no match or more than one match, the service refuses to start rather than choosing an unrelated network.
 
-The diagnostic local-control endpoint binds to loopback by default. Exposing it beyond the local host is not recommended without a separate access-control design.
+The diagnostic local-control endpoint uses a Unix socket by default. The service refuses non-loopback UDP bindings unless an explicit insecure override is supplied for a controlled test.
 
 ## Forwarding policy
 

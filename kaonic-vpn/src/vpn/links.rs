@@ -24,6 +24,7 @@ impl LinkRegistry {
         }
     }
 
+    #[allow(dead_code)]
     pub fn get(&self, hash: &AddressHash) -> Option<LinkHandle> {
         self.links.read().get(hash).cloned()
     }

@@ -7,7 +7,7 @@ Testing should establish four things before the plugin is used operationally:
 1. the service starts on the intended Kaonic network interface;
 2. valid ATAK traffic is carried through the radio path without modification;
 3. the plugin does not transmit onto unrelated local networks or interact with attached hardware;
-4. optional diagnostic peer-hash tracking stays off by default and propagates enable/disable commands only during deliberate testing.
+4. optional diagnostic peer-hash tracking stays off by default, uses the protected local Unix socket for local control, and propagates enable/disable commands only when unauthenticated mesh control is explicitly enabled for deliberate trusted-mesh testing.
 
 ## Build-time checks
 
@@ -48,10 +48,20 @@ When the intended ATAK network uses a different address, configure it explicitly
 Environment="KAONIC_ATAK_INTERFACE_IP=<kaonic-atak-facing-ip>"
 ```
 
-The diagnostic local-control socket should bind to loopback by default and report disabled state:
+The diagnostic local-control socket should exist under `/run` and report disabled state. Use a client that binds its own Unix datagram reply socket:
 
 ```bash
-printf 'status\n' | nc -u -w1 127.0.0.1 19001
+python3 - <<'PY'
+import os, socket, tempfile
+server = "/run/kaonic-atak-plugin/diagnostics.sock"
+client = tempfile.mktemp(prefix="kaonic-atak-diag-", suffix=".sock")
+sock = socket.socket(socket.AF_UNIX, socket.SOCK_DGRAM)
+sock.bind(client)
+sock.sendto(b"status\n", server)
+print(sock.recv(4096).decode(), end="")
+sock.close()
+os.unlink(client)
+PY
 ```
 
 Expected form:
@@ -106,42 +116,98 @@ Run this test only after ordinary ATAK delivery works. Diagnostics must remain d
 1. On both Kaonics, verify the initial state:
 
    ```bash
-   printf 'status\n' | nc -u -w1 127.0.0.1 19001
+   python3 - <<'PY'
+   import os, socket, tempfile
+   server = "/run/kaonic-atak-plugin/diagnostics.sock"
+   client = tempfile.mktemp(prefix="kaonic-atak-diag-", suffix=".sock")
+   sock = socket.socket(socket.AF_UNIX, socket.SOCK_DGRAM)
+   sock.bind(client)
+   sock.sendto(b"status\n", server)
+   print(sock.recv(4096).decode(), end="")
+   sock.close()
+   os.unlink(client)
+   PY
    ```
 
-2. On Kaonic A, request a short network-wide enable window:
+2. Enable unauthenticated diagnostics mesh control on both test Kaonics. This is for trusted bench testing only:
 
-   ```bash
-   printf 'enable 120\n' | nc -u -w1 127.0.0.1 19001
+   ```ini
+   Environment="KAONIC_ATAK_ENABLE_UNAUTHENTICATED_DIAGNOSTICS_MESH_CONTROL=true"
    ```
 
-3. On Kaonic B, confirm that the control command propagated:
+3. On Kaonic A, request a short network-wide enable window:
 
    ```bash
-   printf 'status\n' | nc -u -w1 127.0.0.1 19001
+   python3 - <<'PY'
+   import os, socket, tempfile
+   server = "/run/kaonic-atak-plugin/diagnostics.sock"
+   client = tempfile.mktemp(prefix="kaonic-atak-diag-", suffix=".sock")
+   sock = socket.socket(socket.AF_UNIX, socket.SOCK_DGRAM)
+   sock.bind(client)
+   sock.sendto(b"enable 120\n", server)
+   print(sock.recv(4096).decode(), end="")
+   sock.close()
+   os.unlink(client)
+   PY
+   ```
+
+4. On Kaonic B, confirm that the control command propagated:
+
+   ```bash
+   python3 - <<'PY'
+   import os, socket, tempfile
+   server = "/run/kaonic-atak-plugin/diagnostics.sock"
+   client = tempfile.mktemp(prefix="kaonic-atak-diag-", suffix=".sock")
+   sock = socket.socket(socket.AF_UNIX, socket.SOCK_DGRAM)
+   sock.bind(client)
+   sock.sendto(b"status\n", server)
+   print(sock.recv(4096).decode(), end="")
+   sock.close()
+   os.unlink(client)
+   PY
    ```
 
    `enabled=true` should be reported with a decreasing `remaining_seconds` value.
 
-4. Generate ATAK location or chat CoT traffic through the radio path. On the receiving node, query recent diagnostics:
+5. Generate ATAK location or chat CoT traffic through the radio path. On the receiving node, query recent diagnostics:
 
    ```bash
-   printf 'recent 10\n' | nc -u -w1 127.0.0.1 19001
+   python3 - <<'PY'
+   import os, socket, tempfile
+   server = "/run/kaonic-atak-plugin/diagnostics.sock"
+   client = tempfile.mktemp(prefix="kaonic-atak-diag-", suffix=".sock")
+   sock = socket.socket(socket.AF_UNIX, socket.SOCK_DGRAM)
+   sock.bind(client)
+   sock.sendto(b"recent 10\n", server)
+   print(sock.recv(4096).decode(), end="")
+   sock.close()
+   os.unlink(client)
+   PY
    ```
 
    Each received record should include the Reticulum peer hash and the CoT UID/type, with latitude and longitude only when supplied by the CoT event.
 
-5. Disable tracking from either node and confirm that the disabled state propagates:
+6. Disable tracking from either node and confirm that the disabled state propagates:
 
    ```bash
-   printf 'disable\n' | nc -u -w1 127.0.0.1 19001
+   python3 - <<'PY'
+   import os, socket, tempfile
+   server = "/run/kaonic-atak-plugin/diagnostics.sock"
+   client = tempfile.mktemp(prefix="kaonic-atak-diag-", suffix=".sock")
+   sock = socket.socket(socket.AF_UNIX, socket.SOCK_DGRAM)
+   sock.bind(client)
+   sock.sendto(b"disable\n", server)
+   print(sock.recv(4096).decode(), end="")
+   sock.close()
+   os.unlink(client)
+   PY
    ```
 
-6. Generate additional CoT traffic and verify that the retained-record count does not increase after disable.
+7. Generate additional CoT traffic and verify that the retained-record count remains zero after disable.
 
-7. Capture ATAK traffic before, during, and after diagnostics and confirm that the forwarded ATAK packet bytes remain unchanged.
+8. Capture ATAK traffic before, during, and after diagnostics and confirm that the forwarded ATAK packet bytes remain unchanged.
 
-The current control plane is for trusted testing only; it is not an authorization validation test for operational deployment.
+The current mesh control plane is for trusted testing only; it is not an authorization validation test for operational deployment.
 
 ## Compatibility-mode test
 

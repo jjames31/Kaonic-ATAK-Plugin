@@ -81,7 +81,7 @@ pub async fn attach_radio_interface(
         if let Err(e) = radio_client
             .lock()
             .await
-            .set_radio_config(module, cfg.radio_config.clone())
+            .set_radio_config(module, cfg.radio_config)
             .await
         {
             log::warn!("boot radio config error for module {module}: {e:?}");
@@ -89,7 +89,7 @@ pub async fn attach_radio_interface(
         if let Err(e) = radio_client
             .lock()
             .await
-            .set_modulation(module, cfg.modulation.clone())
+            .set_modulation(module, cfg.modulation)
             .await
         {
             log::warn!("boot modulation error for module {module}: {e:?}");
@@ -126,7 +126,7 @@ pub async fn attach_selected_radio_interface(
     if let Err(e) = radio_client
         .lock()
         .await
-        .set_radio_config(rns_module, cfg.radio_config.clone())
+        .set_radio_config(rns_module, cfg.radio_config)
         .await
     {
         log::warn!("boot radio config error for selected module {rns_module}: {e:?}");
@@ -134,7 +134,7 @@ pub async fn attach_selected_radio_interface(
     if let Err(e) = radio_client
         .lock()
         .await
-        .set_modulation(rns_module, cfg.modulation.clone())
+        .set_modulation(rns_module, cfg.modulation)
         .await
     {
         log::warn!("boot modulation error for selected module {rns_module}: {e:?}");

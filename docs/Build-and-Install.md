@@ -72,12 +72,28 @@ kaonic-atak-plugin
 kaonic-atak-plugin.sha256
 ```
 
+The package script sorts ZIP entries and sets staged file timestamps from `SOURCE_DATE_EPOCH` when present, or from the current commit time otherwise. This keeps repeated packages for the same commit easier to compare.
+
 ## Runtime assumptions
 
 The service is currently configured with the previously verified gateway database path:
 
 ```ini
 Environment="KAONIC_GATEWAY_DB_PATH=/kaonic-gateway.db"
+```
+
+The unit also creates the diagnostics runtime directory:
+
+```ini
+RuntimeDirectory=kaonic-atak-plugin
+RuntimeDirectoryMode=0750
+UMask=0077
+```
+
+The plugin uses that directory for the default local diagnostics socket:
+
+```text
+/run/kaonic-atak-plugin/diagnostics.sock
 ```
 
 The default control endpoint used by the plugin is:

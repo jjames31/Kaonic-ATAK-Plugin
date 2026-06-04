@@ -2,6 +2,30 @@
 
 This log summarizes the packaged Kaonic ATAK Plugin builds. It focuses on operator-visible behavior, packaging status, and validation notes rather than every internal commit.
 
+## v0.1.1-hardened
+
+Current hardened package:
+
+```text
+Builds/KATAK-v0.1.1-hardened.zip
+```
+
+This build continues from v0.1.1 and hardens the diagnostic control and deployment boundary for controlled two-Kaonic bench testing.
+
+- Keeps ATAK forwarding independent from optional diagnostics startup.
+- Uses a restrictive Unix datagram socket at `/run/kaonic-atak-plugin/diagnostics.sock` for local diagnostics control.
+- Retains UDP diagnostics control only as an explicit compatibility/test option.
+- Creates no diagnostic Reticulum destination or diagnostic radio announcements during ordinary bridge operation.
+- Keeps unauthenticated mesh diagnostics behind the explicit trusted-test override.
+- Clears diagnostic records on disable, expiration, restart, and fresh enable.
+- Bounds diagnostic commands, replay state, record count, and parsed CoT identity fields.
+- Removes peer hashes, callsigns, UIDs, and coordinates from default bridge logs.
+- Pins the reviewed Reticulum dependency revision in workspace manifests.
+- Adds a cargo-deny policy documenting remaining transitive advisory exceptions.
+- Produces deterministic ZIP entry ordering and commit-time package timestamps.
+
+Operational mesh diagnostics remain unsupported until signed management authorization and state synchronization are implemented.
+
 ## v0.1.1
 
 Current package:

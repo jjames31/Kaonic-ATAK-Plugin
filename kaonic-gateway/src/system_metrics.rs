@@ -47,6 +47,7 @@ pub fn read_mem_mb() -> (u64, u64) {
     (total.saturating_sub(available) / 1024, total / 1024)
 }
 
+#[allow(clippy::unnecessary_cast)]
 pub fn read_fs_mb() -> (u64, u64) {
     #[cfg(unix)]
     {
@@ -69,7 +70,7 @@ pub fn read_fs_mb() -> (u64, u64) {
         };
         let total = (stats.f_blocks as u64).saturating_mul(block_size);
         let free = (stats.f_bavail as u64).saturating_mul(block_size);
-        return (free / 1024 / 1024, total / 1024 / 1024);
+        (free / 1024 / 1024, total / 1024 / 1024)
     }
 
     #[cfg(not(unix))]

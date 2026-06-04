@@ -15,6 +15,9 @@ Environment="RUST_LOG=info,kaonic_atak_plugin=debug,kaonic_gateway=info,kaonic_r
 # Ignore failure so the plugin also works on images where the default bridge is absent.
 ExecStartPre=-systemctl disable kaonic-atak-bridge.service
 ExecStart=/usr/bin/kaonic-atak-plugin --rns-module 0
+RuntimeDirectory=kaonic-atak-plugin
+RuntimeDirectoryMode=0750
+UMask=0077
 Restart=always
 RestartSec=3
 SyslogIdentifier=kaonic-atak-plugin

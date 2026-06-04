@@ -172,6 +172,7 @@ pub struct WsRadioFramesDto {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "type", content = "data", rename_all = "snake_case")]
+#[allow(clippy::large_enum_variant)]
 pub enum WsStatusEvent {
     Interfaces(WsInterfacesDto),
     NetworkPorts(Vec<NetworkPortStatusDto>),
@@ -182,7 +183,7 @@ pub enum WsStatusEvent {
     RadioFrames(WsRadioFramesDto),
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct GatewayStatusDto {
     pub serial: String,
     pub vpn_hash: String,
@@ -192,21 +193,6 @@ pub struct GatewayStatusDto {
     pub radio_modules: Vec<RadioModuleConfigDto>,
     pub reticulum: ReticulumSnapshotDto,
     pub vpn: VpnSnapshot,
-}
-
-impl Default for GatewayStatusDto {
-    fn default() -> Self {
-        Self {
-            serial: String::new(),
-            vpn_hash: String::new(),
-            network_ports: vec![],
-            system: SystemStatusDto::default(),
-            services: vec![],
-            radio_modules: vec![],
-            reticulum: ReticulumSnapshotDto::default(),
-            vpn: VpnSnapshot::default(),
-        }
-    }
 }
 
 // ── Network ──────────────────────────────────────────────────────────────────
@@ -240,23 +226,12 @@ impl Default for WifiStatusDto {
     }
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct NetworkSnapshotDto {
     pub backend: String,
     pub interface_source: String,
     pub interface_details: String,
     pub wifi: WifiStatusDto,
-}
-
-impl Default for NetworkSnapshotDto {
-    fn default() -> Self {
-        Self {
-            backend: String::new(),
-            interface_source: String::new(),
-            interface_details: String::new(),
-            wifi: WifiStatusDto::default(),
-        }
-    }
 }
 
 // ── Settings ─────────────────────────────────────────────────────────────────

@@ -7,8 +7,10 @@ use crate::cot::CotEvent;
 
 pub const DEFAULT_ENABLE_SECONDS: u64 = 15 * 60;
 pub const MAX_ENABLE_SECONDS: u64 = 24 * 60 * 60;
+pub const MAX_COMMAND_BYTES: usize = 512;
 const CONTROL_VERSION: &str = "KAD1";
 const DEFAULT_MAX_RECORDS: usize = 512;
+const DEFAULT_MAX_SEEN_COMMANDS: usize = 2048;
 const SEEN_COMMAND_RETENTION: Duration = Duration::from_secs(24 * 60 * 60);
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -31,6 +33,7 @@ pub enum DiagnosticCommandError {
     InvalidId,
     InvalidDuration,
     InvalidAction,
+    TooLarge,
 }
 
 impl fmt::Display for DiagnosticCommandError {
@@ -42,6 +45,7 @@ impl fmt::Display for DiagnosticCommandError {
             Self::InvalidId => write!(f, "invalid diagnostics command id"),
             Self::InvalidDuration => write!(f, "invalid diagnostics enable duration"),
             Self::InvalidAction => write!(f, "invalid diagnostics command action"),
+            Self::TooLarge => write!(f, "diagnostics command is too large"),
         }
     }
 }
@@ -69,6 +73,9 @@ impl DiagnosticCommand {
     }
 
     pub fn parse(payload: &[u8]) -> Result<Self, DiagnosticCommandError> {
+        if payload.len() > MAX_COMMAND_BYTES {
+            return Err(DiagnosticCommandError::TooLarge);
+        }
         let text = std::str::from_utf8(payload).map_err(|_| DiagnosticCommandError::NotUtf8)?;
         let fields: Vec<&str> = text.trim().split('|').collect();
         if fields.len() != 4 {
@@ -136,11 +143,13 @@ struct DiagnosticInner {
     enabled_until: Option<SystemTime>,
     records: VecDeque<DiagnosticRecord>,
     seen_commands: HashMap<String, SystemTime>,
+    seen_order: VecDeque<String>,
 }
 
 pub struct DiagnosticState {
     inner: Mutex<DiagnosticInner>,
     max_records: usize,
+    max_seen_commands: usize,
 }
 
 impl Default for DiagnosticState {
@@ -156,27 +165,36 @@ impl DiagnosticState {
                 enabled_until: None,
                 records: VecDeque::new(),
                 seen_commands: HashMap::new(),
+                seen_order: VecDeque::new(),
             }),
             max_records: max_records.max(1),
+            max_seen_commands: DEFAULT_MAX_SEEN_COMMANDS,
         }
     }
 
     /// Applies a network command once. Returning false means this command was
     /// already observed and should not be re-broadcast across the mesh.
     pub fn apply_once(&self, command: &DiagnosticCommand) -> bool {
-        let now = SystemTime::now();
+        self.apply_once_at(command, SystemTime::now())
+    }
+
+    fn apply_once_at(&self, command: &DiagnosticCommand, now: SystemTime) -> bool {
         let mut inner = self.inner.lock().expect("diagnostics state poisoned");
         self.prune_locked(&mut inner, now);
         if inner.seen_commands.contains_key(&command.id) {
             return false;
         }
         inner.seen_commands.insert(command.id.clone(), now);
+        inner.seen_order.push_back(command.id.clone());
+        self.enforce_seen_bound_locked(&mut inner);
         match command.action {
             DiagnosticAction::Enable { seconds } => {
+                inner.records.clear();
                 inner.enabled_until = now.checked_add(Duration::from_secs(seconds));
             }
             DiagnosticAction::Disable => {
                 inner.enabled_until = None;
+                inner.records.clear();
             }
         }
         true
@@ -185,7 +203,16 @@ impl DiagnosticState {
     /// Records valid remote CoT metadata only when diagnostics have been enabled.
     /// ATAK packet bytes are never altered by this state.
     pub fn record_remote(&self, peer_hash: &str, channel_port: u16, event: &CotEvent) -> bool {
-        let now = SystemTime::now();
+        self.record_remote_at(peer_hash, channel_port, event, SystemTime::now())
+    }
+
+    fn record_remote_at(
+        &self,
+        peer_hash: &str,
+        channel_port: u16,
+        event: &CotEvent,
+        now: SystemTime,
+    ) -> bool {
         let mut inner = self.inner.lock().expect("diagnostics state poisoned");
         self.prune_locked(&mut inner, now);
         if !is_enabled_locked(&inner, now) {
@@ -207,7 +234,10 @@ impl DiagnosticState {
     }
 
     pub fn status(&self) -> DiagnosticStatus {
-        let now = SystemTime::now();
+        self.status_at(SystemTime::now())
+    }
+
+    fn status_at(&self, now: SystemTime) -> DiagnosticStatus {
         let mut inner = self.inner.lock().expect("diagnostics state poisoned");
         self.prune_locked(&mut inner, now);
         let remaining_seconds = inner
@@ -223,16 +253,18 @@ impl DiagnosticState {
     }
 
     pub fn recent(&self, limit: usize) -> Vec<DiagnosticRecord> {
-        let now = SystemTime::now();
+        self.recent_at(limit, SystemTime::now())
+    }
+
+    pub fn prune_expired(&self) {
+        let mut inner = self.inner.lock().expect("diagnostics state poisoned");
+        self.prune_locked(&mut inner, SystemTime::now());
+    }
+
+    fn recent_at(&self, limit: usize, now: SystemTime) -> Vec<DiagnosticRecord> {
         let mut inner = self.inner.lock().expect("diagnostics state poisoned");
         self.prune_locked(&mut inner, now);
-        inner
-            .records
-            .iter()
-            .rev()
-            .take(limit)
-            .cloned()
-            .collect()
+        inner.records.iter().rev().take(limit).cloned().collect()
     }
 
     fn prune_locked(&self, inner: &mut DiagnosticInner, now: SystemTime) {
@@ -242,10 +274,43 @@ impl DiagnosticState {
             .unwrap_or(false)
         {
             inner.enabled_until = None;
+            inner.records.clear();
         }
-        inner.seen_commands.retain(|_, observed_at| {
-            now.duration_since(*observed_at).unwrap_or(Duration::ZERO) <= SEEN_COMMAND_RETENTION
-        });
+        while let Some(command_id) = inner.seen_order.front() {
+            let keep = inner
+                .seen_commands
+                .get(command_id)
+                .map(|observed_at| {
+                    now.duration_since(*observed_at).unwrap_or(Duration::ZERO)
+                        <= SEEN_COMMAND_RETENTION
+                })
+                .unwrap_or(false);
+            if keep {
+                break;
+            }
+            if let Some(command_id) = inner.seen_order.pop_front() {
+                inner.seen_commands.remove(&command_id);
+            }
+        }
+    }
+
+    fn enforce_seen_bound_locked(&self, inner: &mut DiagnosticInner) {
+        while inner.seen_commands.len() > self.max_seen_commands {
+            if let Some(command_id) = inner.seen_order.pop_front() {
+                inner.seen_commands.remove(&command_id);
+            } else {
+                break;
+            }
+        }
+    }
+
+    #[cfg(test)]
+    fn seen_command_count(&self) -> usize {
+        self.inner
+            .lock()
+            .expect("diagnostics state poisoned")
+            .seen_commands
+            .len()
     }
 }
 
@@ -285,7 +350,42 @@ mod tests {
         let enable = DiagnosticCommand::enable("abc-123".to_string(), 900).unwrap();
         assert_eq!(DiagnosticCommand::parse(&enable.encode()).unwrap(), enable);
         let disable = DiagnosticCommand::disable("abc-124".to_string()).unwrap();
-        assert_eq!(DiagnosticCommand::parse(&disable.encode()).unwrap(), disable);
+        assert_eq!(
+            DiagnosticCommand::parse(&disable.encode()).unwrap(),
+            disable
+        );
+    }
+
+    #[test]
+    fn rejects_invalid_control_commands() {
+        assert_eq!(
+            DiagnosticCommand::parse(b"KAD2|abc-123|enable|900").unwrap_err(),
+            DiagnosticCommandError::InvalidVersion
+        );
+        assert_eq!(
+            DiagnosticCommand::parse(b"KAD1|bad_id|enable|900").unwrap_err(),
+            DiagnosticCommandError::InvalidId
+        );
+        assert_eq!(
+            DiagnosticCommand::parse(b"KAD1|abc-123|enable|0").unwrap_err(),
+            DiagnosticCommandError::InvalidDuration
+        );
+        assert_eq!(
+            DiagnosticCommand::parse(b"KAD1|abc-123|disable|1").unwrap_err(),
+            DiagnosticCommandError::InvalidDuration
+        );
+        assert_eq!(
+            DiagnosticCommand::parse(b"KAD1|abc-123|enable").unwrap_err(),
+            DiagnosticCommandError::InvalidFormat
+        );
+        assert_eq!(
+            DiagnosticCommand::parse(&[0xff]).unwrap_err(),
+            DiagnosticCommandError::NotUtf8
+        );
+        assert_eq!(
+            DiagnosticCommand::parse(&vec![b'a'; MAX_COMMAND_BYTES + 1]).unwrap_err(),
+            DiagnosticCommandError::TooLarge
+        );
     }
 
     #[test]
@@ -301,12 +401,74 @@ mod tests {
         let state = DiagnosticState::default();
         let event = location_event();
         assert!(!state.record_remote("peer-a", 6969, &event));
-        state
-            .apply_once(&DiagnosticCommand::enable("enable-1".to_string(), 900).unwrap());
+        state.apply_once(&DiagnosticCommand::enable("enable-1".to_string(), 900).unwrap());
         assert!(state.record_remote("peer-a", 6969, &event));
         assert_eq!(state.recent(10).len(), 1);
-        state
-            .apply_once(&DiagnosticCommand::disable("disable-1".to_string()).unwrap());
+        state.apply_once(&DiagnosticCommand::disable("disable-1".to_string()).unwrap());
         assert!(!state.record_remote("peer-a", 6969, &event));
+    }
+
+    #[test]
+    fn clears_records_on_disable() {
+        let state = DiagnosticState::default();
+        let event = location_event();
+        state.apply_once(&DiagnosticCommand::enable("enable-1".to_string(), 900).unwrap());
+        assert!(state.record_remote("peer-a", 6969, &event));
+        state.apply_once(&DiagnosticCommand::disable("disable-1".to_string()).unwrap());
+        assert_eq!(state.status().record_count, 0);
+        assert!(state.recent(10).is_empty());
+    }
+
+    #[test]
+    fn clears_records_on_expiry() {
+        let state = DiagnosticState::default();
+        let event = location_event();
+        let now = SystemTime::UNIX_EPOCH + Duration::from_secs(10);
+        state.apply_once_at(
+            &DiagnosticCommand::enable("enable-1".to_string(), 5).unwrap(),
+            now,
+        );
+        assert!(state.record_remote_at("peer-a", 6969, &event, now + Duration::from_secs(1)));
+        let status = state.status_at(now + Duration::from_secs(6));
+        assert!(!status.enabled);
+        assert_eq!(status.record_count, 0);
+    }
+
+    #[test]
+    fn new_enable_starts_with_empty_records() {
+        let state = DiagnosticState::default();
+        let event = location_event();
+        let now = SystemTime::UNIX_EPOCH + Duration::from_secs(10);
+        state.apply_once_at(
+            &DiagnosticCommand::enable("enable-1".to_string(), 900).unwrap(),
+            now,
+        );
+        assert!(state.record_remote_at("peer-a", 6969, &event, now));
+        state.apply_once_at(
+            &DiagnosticCommand::enable("enable-2".to_string(), 900).unwrap(),
+            now + Duration::from_secs(1),
+        );
+        assert!(state.recent_at(10, now + Duration::from_secs(1)).is_empty());
+    }
+
+    #[test]
+    fn bounds_records_and_seen_commands() {
+        let state = DiagnosticState::new(1);
+        let event = location_event();
+        let now = SystemTime::UNIX_EPOCH + Duration::from_secs(10);
+        state.apply_once_at(
+            &DiagnosticCommand::enable("enable-1".to_string(), 900).unwrap(),
+            now,
+        );
+        assert!(state.record_remote_at("peer-a", 6969, &event, now));
+        assert!(state.record_remote_at("peer-b", 6969, &event, now));
+        assert_eq!(state.recent_at(10, now).len(), 1);
+
+        for index in 0..(DEFAULT_MAX_SEEN_COMMANDS + 2) {
+            let command =
+                DiagnosticCommand::disable(format!("disable-{index}")).expect("valid command");
+            state.apply_once_at(&command, now + Duration::from_secs(index as u64));
+        }
+        assert!(state.seen_command_count() <= DEFAULT_MAX_SEEN_COMMANDS);
     }
 }

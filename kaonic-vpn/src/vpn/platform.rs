@@ -160,14 +160,11 @@ fn run(cmd: &str, args: &[&str]) -> std::io::Result<()> {
     if output.status.success() {
         Ok(())
     } else {
-        Err(std::io::Error::new(
-            std::io::ErrorKind::Other,
-            format!(
-                "{cmd} {} failed: {}",
-                args.join(" "),
-                String::from_utf8_lossy(&output.stderr).trim()
-            ),
-        ))
+        Err(std::io::Error::other(format!(
+            "{cmd} {} failed: {}",
+            args.join(" "),
+            String::from_utf8_lossy(&output.stderr).trim()
+        )))
     }
 }
 
@@ -209,12 +206,9 @@ fn ensure_jump(
 
 #[cfg(target_os = "linux")]
 fn resolve_iptables() -> Option<&'static str> {
-    for cmd in ["iptables", "iptables-nft", "iptables-legacy"] {
-        if supports_netmap(cmd) {
-            return Some(cmd);
-        }
-    }
-    None
+    ["iptables", "iptables-nft", "iptables-legacy"]
+        .into_iter()
+        .find(|&cmd| supports_netmap(cmd))
 }
 
 #[cfg(target_os = "linux")]

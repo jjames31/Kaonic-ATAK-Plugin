@@ -73,10 +73,9 @@ pub fn ensure_gateway_tls_files() -> io::Result<PathBuf> {
         &root_ca,
         "gateway-tls-v2",
         &service_common_name("kaonic-gateway", &device_identity),
-        deterministic_gateway_tls_key_pair()
-            .map_err(|err| io::Error::new(io::ErrorKind::Other, err))?,
+        deterministic_gateway_tls_key_pair().map_err(io::Error::other)?,
     )
-    .map_err(|err| io::Error::new(io::ErrorKind::Other, err))?;
+    .map_err(io::Error::other)?;
     let cert_path = gateway_tls_cert_path();
     let key_path = gateway_tls_key_path();
     ensure_parent_dir(&cert_path)?;
@@ -104,7 +103,7 @@ pub fn ensure_plugin_tls_files(current_dir: &Path, plugin_id: &str) -> io::Resul
         &service_common_name(plugin_id, &device_identity),
         deterministic_plugin_tls_key_pair(plugin_id)?,
     )
-    .map_err(|err| io::Error::new(io::ErrorKind::Other, err))?;
+    .map_err(io::Error::other)?;
     let cert_path = current_dir.join(PLUGIN_TLS_CERT_FILE);
     let key_path = current_dir.join(PLUGIN_TLS_KEY_FILE);
     ensure_parent_dir(&cert_path)?;
@@ -150,8 +149,7 @@ fn load_or_create_root_ca_artifacts(dir: &Path) -> io::Result<RootCaArtifacts> {
         Err(err) if err.kind() == io::ErrorKind::NotFound => generate_secure_root_ca_key_der()?,
         Err(err) => return Err(err),
     };
-    generate_root_ca_artifacts(&key_der, read_device_serial().as_deref())
-        .map_err(|err| io::Error::new(io::ErrorKind::Other, err))
+    generate_root_ca_artifacts(&key_der, read_device_serial().as_deref()).map_err(io::Error::other)
 }
 
 fn generate_root_ca_artifacts(
@@ -204,12 +202,7 @@ fn root_ca_common_name(device_serial: Option<&str>) -> String {
 fn generate_secure_root_ca_key_der() -> io::Result<Vec<u8>> {
     SigningKey::random(&mut OsRng)
         .to_pkcs8_der()
-        .map_err(|err| {
-            io::Error::new(
-                io::ErrorKind::Other,
-                format!("encode local root CA key: {err}"),
-            )
-        })
+        .map_err(|err| io::Error::other(format!("encode local root CA key: {err}")))
         .map(|document| document.as_bytes().to_vec())
 }
 
@@ -299,23 +292,14 @@ fn deterministic_plugin_tls_key_pair(plugin_id: &str) -> io::Result<KeyPair> {
         device_identity,
         plugin_id
     ))
-    .map_err(|err| io::Error::new(io::ErrorKind::Other, err))?;
+    .map_err(io::Error::other)?;
     let key_der = signing_key
         .to_pkcs8_der()
-        .map_err(|err| {
-            io::Error::new(
-                io::ErrorKind::Other,
-                format!("encode deterministic plugin TLS key: {err}"),
-            )
-        })?
+        .map_err(|err| io::Error::other(format!("encode deterministic plugin TLS key: {err}")))?
         .as_bytes()
         .to_vec();
-    KeyPair::try_from(key_der.as_slice()).map_err(|err| {
-        io::Error::new(
-            io::ErrorKind::Other,
-            format!("load deterministic plugin TLS key: {err}"),
-        )
-    })
+    KeyPair::try_from(key_der.as_slice())
+        .map_err(|err| io::Error::other(format!("load deterministic plugin TLS key: {err}")))
 }
 
 fn service_subject_alt_names() -> Vec<String> {
