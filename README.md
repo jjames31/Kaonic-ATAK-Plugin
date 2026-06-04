@@ -25,6 +25,7 @@ The plugin has an implementation baseline for validated CoT forwarding, location
 
 ## Documentation
 
+- ###[Wiki](https://github.com/jjames31/Kaonic-ATAK-Plugin)
 - [Documentation home](docs/Home.md)
 - [Design and safety](docs/Design-and-Safety.md)
 - [Configuration](docs/Configuration.md)
