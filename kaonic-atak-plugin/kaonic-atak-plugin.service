@@ -2,10 +2,16 @@
 Description=Kaonic ATAK Plugin
 After=network-online.target kaonic-commd.service
 Wants=network-online.target
+# Both bridge services use the same ATAK multicast channels and must not run together.
+Conflicts=kaonic-atak-bridge.service
+Before=kaonic-atak-bridge.service
 
 [Service]
 Type=simple
 Environment="KAONIC_GATEWAY_DB_PATH=/kaonic-gateway.db"
+# Once this replacement is started, do not start the default bridge again at boot.
+# Ignore failure so the plugin also works on images where the default bridge is absent.
+ExecStartPre=-systemctl disable kaonic-atak-bridge.service
 ExecStart=/usr/bin/kaonic-atak-plugin --rns-module 0
 Restart=always
 RestartSec=3
