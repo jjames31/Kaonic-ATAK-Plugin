@@ -27,6 +27,7 @@ The plugin has an implementation baseline for validated CoT forwarding, location
 
 ## Documentation
 
+- ### [Wiki](https://github.com/jjames31/Kaonic-ATAK-Plugin/wiki)
 - [Documentation home](docs/Home.md)
 - [Design and safety](docs/Design-and-Safety.md)
 - [Configuration](docs/Configuration.md)
@@ -50,3 +51,8 @@ deploy/kaonic-atak-plugin/kaonic-atak-plugin.zip
 ## Reference implementation
 
 Beechat's `kaonic-atak-bridge` in `kaonic-gateway` is used as an upstream reference for Kaonic transport and packaging patterns. This repository contains the custom implementation for this project.
+
+
+
+
+# - [**Download**](https://github.com/jjames31/Kaonic-ATAK-Plugin/tree/main/Builds)
