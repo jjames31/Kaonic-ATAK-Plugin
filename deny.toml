@@ -1,0 +1,47 @@
+[graph]
+targets = [
+    "x86_64-unknown-linux-gnu",
+    "armv7-unknown-linux-musleabihf",
+]
+all-features = true
+
+[advisories]
+ignore = [
+    { id = "RUSTSEC-2024-0436", reason = "Transitive through Leptos/tachys and rmp/Reticulum; RustSec reports no safe patched paste release. Track upstream migration before operational deployment." },
+    { id = "RUSTSEC-2025-0134", reason = "Transitive through axum-server TLS support; RustSec reports no safe patched rustls-pemfile release. Track axum-server/rustls-pki-types migration before operational deployment." },
+    { id = "RUSTSEC-2026-0097", reason = "Pinned kaonic-radio dependencies require rand = 0.8.5 exactly, blocking the patched 0.8.6 update. Track kaonic-radio update before field or operational deployment." },
+]
+unused-ignored-advisory = "warn"
+
+[licenses]
+allow = [
+    "Apache-2.0",
+    "BSD-2-Clause",
+    "BSD-3-Clause",
+    "BSL-1.0",
+    "CDLA-Permissive-2.0",
+    "CC0-1.0",
+    "ISC",
+    "MIT",
+    "Unicode-3.0",
+    "Unlicense",
+    "Zlib",
+]
+confidence-threshold = 0.8
+
+[licenses.private]
+ignore = true
+ignore-sources = ["https://github.com/BeechatNetworkSystemsLtd/kaonic-radio"]
+
+[bans]
+multiple-versions = "warn"
+wildcards = "allow"
+
+[sources]
+unknown-registry = "deny"
+unknown-git = "deny"
+allow-registry = ["https://github.com/rust-lang/crates.io-index"]
+allow-git = [
+    "https://github.com/BeechatNetworkSystemsLtd/Reticulum-rs",
+    "https://github.com/BeechatNetworkSystemsLtd/kaonic-radio",
+]

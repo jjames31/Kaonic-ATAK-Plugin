@@ -1,5 +1,8 @@
 use std::collections::HashSet;
 use std::net::{Ipv4Addr, SocketAddr};
+#[cfg(unix)]
+use std::os::unix::fs::PermissionsExt;
+use std::path::{Path, PathBuf};
 use std::process;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
@@ -26,6 +29,8 @@ use reticulum::hash::AddressHash;
 use reticulum::identity::PrivateIdentity;
 use reticulum::transport::{TimerConfig, Transport, TransportConfig};
 use tokio::net::UdpSocket;
+#[cfg(unix)]
+use tokio::net::UnixDatagram;
 use tokio::sync::Mutex;
 use tokio::task::JoinHandle;
 use tokio_util::sync::CancellationToken;
@@ -41,12 +46,15 @@ const DEFAULT_SEED_KEY: &str = "atak_plugin_identity_seed";
 const ATAK_INTERFACE_ENV: &str = "KAONIC_ATAK_INTERFACE";
 const ATAK_INTERFACE_IP_ENV: &str = "KAONIC_ATAK_INTERFACE_IP";
 const OPAQUE_FORWARDING_ENV: &str = "KAONIC_ATAK_ALLOW_OPAQUE_FORWARDING";
+const DIAGNOSTICS_UNIX_SOCKET_ENV: &str = "KAONIC_ATAK_DIAGNOSTICS_UNIX_SOCKET";
+const DISABLE_LOCAL_DIAGNOSTICS_CONTROL_ENV: &str = "KAONIC_ATAK_DISABLE_LOCAL_DIAGNOSTICS_CONTROL";
+const REQUIRE_DIAGNOSTICS_CONTROL_ENV: &str = "KAONIC_ATAK_REQUIRE_DIAGNOSTICS_CONTROL";
 const DIAGNOSTICS_CONTROL_LISTEN_ENV: &str = "KAONIC_ATAK_DIAGNOSTICS_CONTROL_LISTEN";
 const INSECURE_DIAGNOSTICS_CONTROL_LISTEN_ENV: &str =
     "KAONIC_ATAK_ALLOW_INSECURE_DIAGNOSTICS_CONTROL_LISTEN";
 const UNAUTHENTICATED_DIAGNOSTICS_MESH_CONTROL_ENV: &str =
     "KAONIC_ATAK_ENABLE_UNAUTHENTICATED_DIAGNOSTICS_MESH_CONTROL";
-const DEFAULT_DIAGNOSTICS_CONTROL_LISTEN: &str = "127.0.0.1:19001";
+const DEFAULT_DIAGNOSTICS_UNIX_SOCKET: &str = "/run/kaonic-atak-plugin/diagnostics.sock";
 const DIAGNOSTICS_DEST_NAME: &str = "atak.diag.control";
 const DIAGNOSTICS_PORT_TAG: &[u8] = b"atak-diag-control-v1";
 const MAX_LOCAL_RECENT_RECORDS: usize = 20;
@@ -76,7 +84,19 @@ struct Command {
     #[arg(long, default_value_t = false)]
     allow_unvalidated_payloads: bool,
 
-    /// Loopback address used by a local diagnostics plugin or CLI to enable and inspect tracking.
+    /// Unix datagram socket used by a local diagnostics plugin or CLI. Overrides KAONIC_ATAK_DIAGNOSTICS_UNIX_SOCKET.
+    #[arg(long, value_name = "PATH")]
+    diagnostics_unix_socket: Option<PathBuf>,
+
+    /// Disable the local diagnostics control endpoint. ATAK forwarding is unaffected.
+    #[arg(long, default_value_t = false)]
+    disable_local_diagnostics_control: bool,
+
+    /// Treat local diagnostics control startup failure as fatal. Off by default so ATAK forwarding survives diagnostics issues.
+    #[arg(long, default_value_t = false)]
+    require_diagnostics_control: bool,
+
+    /// Compatibility UDP address for local diagnostics tests. Disabled unless explicitly set.
     /// Overrides KAONIC_ATAK_DIAGNOSTICS_CONTROL_LISTEN.
     #[arg(long, value_name = "IPv4:PORT")]
     diagnostics_control_listen: Option<SocketAddr>,
@@ -98,6 +118,13 @@ struct BridgeMetrics {
     invalid_remote_packets: AtomicU64,
     local_locations: AtomicU64,
     remote_locations: AtomicU64,
+}
+
+#[derive(Debug, Clone)]
+struct DiagnosticsControlConfig {
+    unix_socket: Option<PathBuf>,
+    udp_addr: Option<SocketAddr>,
+    require_control: bool,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -145,21 +172,36 @@ async fn main() -> Result<(), process::ExitCode> {
         log::info!("safe forwarding mode enabled: invalid non-CoT payloads will be dropped");
     }
 
-    let diagnostics_control_listen = configured_socket_addr(
-        cmd.diagnostics_control_listen,
-        DIAGNOSTICS_CONTROL_LISTEN_ENV,
-    )?
-    .unwrap_or_else(|| DEFAULT_DIAGNOSTICS_CONTROL_LISTEN.parse().unwrap());
+    let disable_local_diagnostics_control = cmd.disable_local_diagnostics_control
+        || env_flag_enabled(DISABLE_LOCAL_DIAGNOSTICS_CONTROL_ENV);
+    let diagnostics_unix_socket = if disable_local_diagnostics_control {
+        None
+    } else {
+        configured_diagnostics_unix_socket(cmd.diagnostics_unix_socket.clone())
+    };
     let allow_insecure_diagnostics_control_listen = cmd.allow_insecure_diagnostics_control_listen
         || env_flag_enabled(INSECURE_DIAGNOSTICS_CONTROL_LISTEN_ENV);
-    validate_diagnostics_control_listen(
-        diagnostics_control_listen,
+    let diagnostics_udp_addr = configured_diagnostics_udp_addr(
+        cmd.diagnostics_control_listen,
         allow_insecure_diagnostics_control_listen,
-    )?;
-    if allow_insecure_diagnostics_control_listen && !diagnostics_control_listen.ip().is_loopback() {
+    );
+    if allow_insecure_diagnostics_control_listen {
+        if let Some(diagnostics_control_listen) = diagnostics_udp_addr {
+            if !diagnostics_control_listen.ip().is_loopback() {
+                log::warn!("insecure diagnostics UDP control binding allowed by explicit override");
+            }
+        }
+    }
+    let require_diagnostics_control =
+        cmd.require_diagnostics_control || env_flag_enabled(REQUIRE_DIAGNOSTICS_CONTROL_ENV);
+    let diagnostics_control = DiagnosticsControlConfig {
+        unix_socket: diagnostics_unix_socket,
+        udp_addr: diagnostics_udp_addr,
+        require_control: require_diagnostics_control,
+    };
+    if diagnostics_control.unix_socket.is_none() && diagnostics_control.udp_addr.is_none() {
         log::warn!(
-            "insecure diagnostics local control socket binding allowed by explicit override: {}",
-            diagnostics_control_listen
+            "local diagnostics control is unavailable; ATAK bridge forwarding can still operate"
         );
     }
 
@@ -243,19 +285,25 @@ async fn main() -> Result<(), process::ExitCode> {
 
     let location_state = Arc::new(LocationState::default());
     let diagnostic_state = Arc::new(DiagnosticState::default());
-    let mut tasks = start_diagnostics_control(
-        transport.clone(),
-        id.clone(),
+    let mut tasks = vec![spawn_diagnostics_expiry_cleanup(
         diagnostic_state.clone(),
-        diagnostics_control_listen,
-        enable_unauthenticated_diagnostics_mesh_control,
         cancel.clone(),
-    )
-    .await
-    .map_err(|err| {
-        log::error!("failed to start diagnostics control channel: {err}");
-        process::ExitCode::FAILURE
-    })?;
+    )];
+    tasks.extend(
+        start_diagnostics_control(
+            transport.clone(),
+            id.clone(),
+            diagnostic_state.clone(),
+            diagnostics_control,
+            enable_unauthenticated_diagnostics_mesh_control,
+            cancel.clone(),
+        )
+        .await
+        .map_err(|err| {
+            log::error!("failed to start required diagnostics control channel: {err}");
+            process::ExitCode::FAILURE
+        })?,
+    );
 
     for channel in ATAK_CHANNELS {
         let channel_tasks = start_bridge(
@@ -313,35 +361,70 @@ fn configured_ipv4(
     }
 }
 
-fn configured_socket_addr(
+fn configured_diagnostics_unix_socket(cli_value: Option<PathBuf>) -> Option<PathBuf> {
+    let path = cli_value
+        .or_else(|| non_empty_env(DIAGNOSTICS_UNIX_SOCKET_ENV).map(PathBuf::from))
+        .unwrap_or_else(|| PathBuf::from(DEFAULT_DIAGNOSTICS_UNIX_SOCKET));
+
+    match validate_diagnostics_unix_socket_path(&path) {
+        Ok(()) => Some(path),
+        Err(err) => {
+            log::warn!("diagnostics Unix socket disabled: {err}");
+            None
+        }
+    }
+}
+
+fn validate_diagnostics_unix_socket_path(path: &Path) -> Result<(), String> {
+    if path.as_os_str().is_empty() {
+        return Err("socket path is empty".to_string());
+    }
+    if !path.is_absolute() {
+        return Err(format!("socket path must be absolute: {}", path.display()));
+    }
+    Ok(())
+}
+
+fn configured_diagnostics_udp_addr(
     cli_value: Option<SocketAddr>,
-    env_name: &str,
-) -> Result<Option<SocketAddr>, process::ExitCode> {
-    if cli_value.is_some() {
-        return Ok(cli_value);
-    }
-    match non_empty_env(env_name) {
-        Some(value) => value.parse::<SocketAddr>().map(Some).map_err(|err| {
-            log::error!("invalid {env_name} value '{value}': {err}");
-            process::ExitCode::FAILURE
-        }),
-        None => Ok(None),
-    }
+    allow_insecure: bool,
+) -> Option<SocketAddr> {
+    let configured = match cli_value {
+        Some(value) => Some(value),
+        None => match non_empty_env(DIAGNOSTICS_CONTROL_LISTEN_ENV) {
+            Some(value) => match value.parse::<SocketAddr>() {
+                Ok(parsed) => Some(parsed),
+                Err(err) => {
+                    log::warn!("diagnostics UDP control disabled: invalid {DIAGNOSTICS_CONTROL_LISTEN_ENV} value: {err}");
+                    None
+                }
+            },
+            None => None,
+        },
+    };
+
+    configured.and_then(|listen_addr| {
+        validate_diagnostics_control_listen(listen_addr, allow_insecure)
+            .map(|_| listen_addr)
+            .map_err(|err| {
+                log::warn!("diagnostics UDP control disabled: {err}");
+            })
+            .ok()
+    })
 }
 
 fn validate_diagnostics_control_listen(
     listen_addr: SocketAddr,
     allow_insecure: bool,
-) -> Result<(), process::ExitCode> {
+) -> Result<(), String> {
     if listen_addr.ip().is_loopback() || allow_insecure {
         return Ok(());
     }
-    log::error!(
+    Err(format!(
         "diagnostics local control socket must bind to loopback unless \
          --allow-insecure-diagnostics-control-listen or \
          {INSECURE_DIAGNOSTICS_CONTROL_LISTEN_ENV}=true is set"
-    );
-    Err(process::ExitCode::FAILURE)
+    ))
 }
 
 fn env_flag_enabled(name: &str) -> bool {
@@ -457,11 +540,11 @@ async fn start_bridge(
 
                                 match ev.event {
                                     LinkEvent::Activated => {
-                                        log::info!("atak-plugin:{}:{} link activated {}", channel.name, channel.port, ev.address_hash);
+                                        log::info!("atak-plugin:{}:{} link activated", channel.name, channel.port);
                                     }
                                     LinkEvent::Closed => {
                                         peer_hashes.lock().await.remove(&ev.address_hash);
-                                        log::info!("atak-plugin:{}:{} link closed {}", channel.name, channel.port, ev.address_hash);
+                                        log::info!("atak-plugin:{}:{} link closed", channel.name, channel.port);
                                     }
                                     LinkEvent::Data(payload) => {
                                         let data = payload.as_slice();
@@ -520,7 +603,7 @@ async fn start_bridge(
                                 }
 
                                 peer_hashes.lock().await.insert(peer.address_hash);
-                                log::info!("atak-plugin:{}:{} auto-link -> {}", channel.name, channel.port, peer.address_hash);
+                                log::info!("atak-plugin:{}:{} auto-link created", channel.name, channel.port);
                                 transport.lock().await.link(peer).await;
                             }
                             Err(tokio::sync::broadcast::error::RecvError::Lagged(skipped)) => {
@@ -559,23 +642,101 @@ async fn start_diagnostics_control(
     transport: Arc<Mutex<Transport>>,
     identity: PrivateIdentity,
     diagnostic_state: Arc<DiagnosticState>,
-    local_control_addr: SocketAddr,
+    control_config: DiagnosticsControlConfig,
     enable_mesh_control: bool,
     cancel: CancellationToken,
 ) -> Result<Vec<JoinHandle<()>>, Box<dyn std::error::Error + Send + Sync>> {
-    let control_socket = UdpSocket::bind(local_control_addr).await?;
+    let mut tasks = Vec::new();
+    let mut local_control_available = false;
+    #[cfg(unix)]
+    let mut unix_control_socket = None;
+    let mut udp_control_socket = None;
+
+    #[cfg(unix)]
+    if let Some(path) = control_config.unix_socket.as_deref() {
+        match bind_unix_diagnostics_socket(path).await {
+            Ok(control_socket) => {
+                log::info!(
+                    "atak-plugin:diagnostics local Unix socket listening at {}",
+                    path.display()
+                );
+                local_control_available = true;
+                unix_control_socket = Some(control_socket);
+            }
+            Err(err) => {
+                let message = format!(
+                    "diagnostics Unix socket {} unavailable: {err}",
+                    path.display()
+                );
+                if control_config.require_control {
+                    return Err(message.into());
+                }
+                log::warn!("{message}; ATAK forwarding will continue");
+            }
+        }
+    }
+
+    #[cfg(not(unix))]
+    if control_config.unix_socket.is_some() {
+        if control_config.require_control {
+            return Err("diagnostics Unix socket requested on a non-Unix target".into());
+        }
+        log::warn!(
+            "diagnostics Unix socket unavailable on this target; ATAK forwarding will continue"
+        );
+    }
+
+    if let Some(local_control_addr) = control_config.udp_addr {
+        match UdpSocket::bind(local_control_addr).await {
+            Ok(control_socket) => {
+                log::info!(
+                    "atak-plugin:diagnostics compatibility UDP control listening on {}",
+                    local_control_addr
+                );
+                local_control_available = true;
+                udp_control_socket = Some(control_socket);
+            }
+            Err(err) => {
+                let message =
+                    format!("diagnostics UDP control {local_control_addr} unavailable: {err}");
+                if control_config.require_control {
+                    return Err(message.into());
+                }
+                log::warn!("{message}; ATAK forwarding will continue");
+            }
+        }
+    }
+
+    if !local_control_available {
+        let message = "no local diagnostics control endpoint is available";
+        if control_config.require_control {
+            return Err(message.into());
+        }
+        log::warn!("{message}; ATAK forwarding will continue");
+    }
 
     if !enable_mesh_control {
+        #[cfg(unix)]
+        if let Some(control_socket) = unix_control_socket {
+            tasks.push(spawn_unix_diagnostics_control(
+                control_socket,
+                None,
+                diagnostic_state.clone(),
+                cancel.clone(),
+            ));
+        }
+        if let Some(control_socket) = udp_control_socket {
+            tasks.push(spawn_udp_diagnostics_control(
+                control_socket,
+                None,
+                diagnostic_state,
+                cancel,
+            ));
+        }
         log::info!(
-            "atak-plugin:diagnostics listening locally on {} (mesh control disabled by default)",
-            local_control_addr
+            "atak-plugin:diagnostics mesh control disabled; no diagnostics Reticulum destination will be announced"
         );
-        return Ok(vec![spawn_local_diagnostics_control(
-            control_socket,
-            None,
-            diagnostic_state,
-            cancel,
-        )]);
+        return Ok(tasks);
     }
 
     let peer_hashes = Arc::new(Mutex::new(HashSet::<AddressHash>::new()));
@@ -598,17 +759,26 @@ async fn start_diagnostics_control(
     }
 
     log::info!(
-        "atak-plugin:diagnostics listening locally on {} dest={} (disabled by default)",
-        local_control_addr,
-        dest_hash
+        "atak-plugin:diagnostics trusted-test mesh control destination active (disabled by default)"
     );
 
-    let local_control = spawn_local_diagnostics_control(
-        control_socket,
-        Some((transport.clone(), dest_hash)),
-        diagnostic_state.clone(),
-        cancel.clone(),
-    );
+    #[cfg(unix)]
+    if let Some(control_socket) = unix_control_socket {
+        tasks.push(spawn_unix_diagnostics_control(
+            control_socket,
+            Some((transport.clone(), dest_hash)),
+            diagnostic_state.clone(),
+            cancel.clone(),
+        ));
+    }
+    if let Some(control_socket) = udp_control_socket {
+        tasks.push(spawn_udp_diagnostics_control(
+            control_socket,
+            Some((transport.clone(), dest_hash)),
+            diagnostic_state.clone(),
+            cancel.clone(),
+        ));
+    }
 
     let network_control = {
         let transport = transport.clone();
@@ -628,21 +798,21 @@ async fn start_diagnostics_control(
                                 }
                                 match ev.event {
                                     LinkEvent::Activated => {
-                                        log::info!("atak-plugin:diagnostics control link activated {}", ev.address_hash);
+                                        log::info!("atak-plugin:diagnostics control link activated");
                                     }
                                     LinkEvent::Closed => {
                                         peer_hashes.lock().await.remove(&ev.address_hash);
-                                        log::info!("atak-plugin:diagnostics control link closed {}", ev.address_hash);
+                                        log::info!("atak-plugin:diagnostics control link closed");
                                     }
                                     LinkEvent::Data(payload) => {
                                         match DiagnosticCommand::parse(payload.as_slice()) {
                                             Ok(command) if diagnostic_state.apply_once(&command) => {
                                                 match command.action {
                                                     DiagnosticAction::Enable { seconds } => {
-                                                        log::warn!("diagnostics peer-hash tracking enabled for {seconds}s by mesh control message received from {}", ev.address_hash);
+                                                        log::warn!("diagnostics peer-hash tracking enabled for {seconds}s by trusted-test mesh control message");
                                                     }
                                                     DiagnosticAction::Disable => {
-                                                        log::warn!("diagnostics peer-hash tracking disabled by mesh control message received from {}", ev.address_hash);
+                                                        log::warn!("diagnostics peer-hash tracking disabled by trusted-test mesh control message");
                                                     }
                                                 }
                                                 // Re-broadcast each new command once so it propagates through multi-hop plugin topologies.
@@ -650,7 +820,7 @@ async fn start_diagnostics_control(
                                             }
                                             Ok(_) => {}
                                             Err(err) => {
-                                                log::warn!("dropping invalid diagnostics control message from {}: {err}", ev.address_hash);
+                                                log::warn!("dropping invalid diagnostics control message: {err}");
                                             }
                                         }
                                     }
@@ -688,7 +858,7 @@ async fn start_diagnostics_control(
                                     continue;
                                 }
                                 peer_hashes.lock().await.insert(peer.address_hash);
-                                log::info!("atak-plugin:diagnostics auto-link -> {}", peer.address_hash);
+                                log::info!("atak-plugin:diagnostics auto-link created");
                                 transport.lock().await.link(peer).await;
                             }
                             Err(tokio::sync::broadcast::error::RecvError::Lagged(skipped)) => {
@@ -720,10 +890,14 @@ async fn start_diagnostics_control(
         })
     };
 
-    Ok(vec![local_control, network_control, auto_link, reannounce])
+    tasks.push(network_control);
+    tasks.push(auto_link);
+    tasks.push(reannounce);
+
+    Ok(tasks)
 }
 
-fn spawn_local_diagnostics_control(
+fn spawn_udp_diagnostics_control(
     control_socket: UdpSocket,
     mesh_control: Option<(Arc<Mutex<Transport>>, AddressHash)>,
     diagnostic_state: Arc<DiagnosticState>,
@@ -748,6 +922,74 @@ fn spawn_local_diagnostics_control(
                         }
                         Err(err) => log::warn!("diagnostics local command socket error: {err}"),
                     }
+                }
+            }
+        }
+    })
+}
+
+#[cfg(unix)]
+async fn bind_unix_diagnostics_socket(path: &Path) -> std::io::Result<UnixDatagram> {
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    match std::fs::remove_file(path) {
+        Ok(()) => {}
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => {}
+        Err(err) => return Err(err),
+    }
+    let socket = UnixDatagram::bind(path)?;
+    std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600))?;
+    Ok(socket)
+}
+
+#[cfg(unix)]
+fn spawn_unix_diagnostics_control(
+    control_socket: UnixDatagram,
+    mesh_control: Option<(Arc<Mutex<Transport>>, AddressHash)>,
+    diagnostic_state: Arc<DiagnosticState>,
+    cancel: CancellationToken,
+) -> JoinHandle<()> {
+    tokio::spawn(async move {
+        let mut buf = [0u8; MAX_LOCAL_DIAGNOSTIC_REQUEST_BYTES];
+        loop {
+            tokio::select! {
+                _ = cancel.cancelled() => break,
+                result = control_socket.recv_from(&mut buf) => {
+                    match result {
+                        Ok((len, source)) => {
+                            let response = handle_local_diagnostic_request(
+                                &buf[..len],
+                                mesh_control.as_ref(),
+                                &diagnostic_state,
+                            ).await;
+                            if let Some(reply_path) = source.as_pathname() {
+                                if let Err(err) = control_socket.send_to(response.as_bytes(), reply_path).await {
+                                    log::warn!("diagnostics local Unix response error: {err}");
+                                }
+                            } else {
+                                log::warn!("diagnostics local Unix request used an unnamed reply socket");
+                            }
+                        }
+                        Err(err) => log::warn!("diagnostics local Unix socket error: {err}"),
+                    }
+                }
+            }
+        }
+    })
+}
+
+fn spawn_diagnostics_expiry_cleanup(
+    diagnostic_state: Arc<DiagnosticState>,
+    cancel: CancellationToken,
+) -> JoinHandle<()> {
+    tokio::spawn(async move {
+        let mut interval = tokio::time::interval(Duration::from_secs(30));
+        loop {
+            tokio::select! {
+                _ = cancel.cancelled() => break,
+                _ = interval.tick() => {
+                    diagnostic_state.prune_expired();
                 }
             }
         }
@@ -1050,5 +1292,22 @@ mod tests {
         assert!(validate_diagnostics_control_listen(loopback, false).is_ok());
         assert!(validate_diagnostics_control_listen(non_loopback, false).is_err());
         assert!(validate_diagnostics_control_listen(non_loopback, true).is_ok());
+    }
+
+    #[test]
+    fn diagnostics_unix_socket_path_must_be_absolute() {
+        assert!(validate_diagnostics_unix_socket_path(Path::new(
+            "/run/kaonic-atak-plugin/diagnostics.sock"
+        ))
+        .is_ok());
+        assert!(validate_diagnostics_unix_socket_path(Path::new("diagnostics.sock")).is_err());
+    }
+
+    #[tokio::test]
+    async fn local_diagnostics_control_does_not_relay_without_mesh_control() {
+        let state = DiagnosticState::default();
+        let response = handle_local_diagnostic_request(b"enable 120", None, &state).await;
+        assert!(response.starts_with("OK enabled=true"));
+        assert!(state.status().enabled);
     }
 }

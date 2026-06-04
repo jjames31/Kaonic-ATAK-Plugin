@@ -20,7 +20,7 @@ The custom plugin still needs hardware validation before operational deployment:
 - installation and startup testing on the current Kaonic image;
 - real ATAK phone ingress testing;
 - two-Kaonic radio delivery testing;
-- loopback diagnostics-query testing and trusted-mesh enable/disable propagation when explicitly enabled.
+- Unix-socket diagnostics-query testing and trusted-mesh enable/disable propagation when explicitly enabled.
 
 ## Supported ATAK channels
 

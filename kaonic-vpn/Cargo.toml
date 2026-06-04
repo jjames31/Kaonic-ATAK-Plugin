@@ -3,12 +3,13 @@ name = "kaonic-vpn"
 version = "0.1.0"
 edition = "2021"
 rust-version = "1.85"
+publish = false
 
 [features]
 run = ["dep:reticulum", "dep:kaonic-reticulum", "dep:tokio-util", "dep:cidr-v3"]
 
 [dependencies]
-reticulum        = { git = "https://github.com/BeechatNetworkSystemsLtd/Reticulum-rs", branch = "fix/add-timer-configs", optional = true }
+reticulum        = { git = "https://github.com/BeechatNetworkSystemsLtd/Reticulum-rs", rev = "bbb09ed7a8b6ead454737bd63671cb2f8be65e70", optional = true }
 kaonic-reticulum = { path = "../kaonic-reticulum", optional = true }
 cidr-v3          = { package = "cidr", version = "0.3", features = ["serde"], optional = true }
 cidr             = { version = "0.2", features = ["serde"] }

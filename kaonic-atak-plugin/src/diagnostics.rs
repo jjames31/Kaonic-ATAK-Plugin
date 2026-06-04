@@ -189,6 +189,7 @@ impl DiagnosticState {
         self.enforce_seen_bound_locked(&mut inner);
         match command.action {
             DiagnosticAction::Enable { seconds } => {
+                inner.records.clear();
                 inner.enabled_until = now.checked_add(Duration::from_secs(seconds));
             }
             DiagnosticAction::Disable => {
@@ -253,6 +254,11 @@ impl DiagnosticState {
 
     pub fn recent(&self, limit: usize) -> Vec<DiagnosticRecord> {
         self.recent_at(limit, SystemTime::now())
+    }
+
+    pub fn prune_expired(&self) {
+        let mut inner = self.inner.lock().expect("diagnostics state poisoned");
+        self.prune_locked(&mut inner, SystemTime::now());
     }
 
     fn recent_at(&self, limit: usize, now: SystemTime) -> Vec<DiagnosticRecord> {
@@ -426,6 +432,23 @@ mod tests {
         let status = state.status_at(now + Duration::from_secs(6));
         assert!(!status.enabled);
         assert_eq!(status.record_count, 0);
+    }
+
+    #[test]
+    fn new_enable_starts_with_empty_records() {
+        let state = DiagnosticState::default();
+        let event = location_event();
+        let now = SystemTime::UNIX_EPOCH + Duration::from_secs(10);
+        state.apply_once_at(
+            &DiagnosticCommand::enable("enable-1".to_string(), 900).unwrap(),
+            now,
+        );
+        assert!(state.record_remote_at("peer-a", 6969, &event, now));
+        state.apply_once_at(
+            &DiagnosticCommand::enable("enable-2".to_string(), 900).unwrap(),
+            now + Duration::from_secs(1),
+        );
+        assert!(state.recent_at(10, now + Duration::from_secs(1)).is_empty());
     }
 
     #[test]

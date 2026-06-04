@@ -2,6 +2,7 @@
 name = "kaonic-gateway"
 version = "0.2.3"
 edition = "2021"
+publish = false
 
 [lib]
 crate-type = ["rlib"]
@@ -23,7 +24,7 @@ thiserror     = "1"
 kaonic-ctrl      = { git = "https://github.com/BeechatNetworkSystemsLtd/kaonic-radio" }
 kaonic-frame     = { git = "https://github.com/BeechatNetworkSystemsLtd/kaonic-radio" }
 kaonic-reticulum = { path = "../kaonic-reticulum" }
-reticulum        = { git = "https://github.com/BeechatNetworkSystemsLtd/Reticulum-rs", branch = "fix/add-timer-configs" }
+reticulum        = { git = "https://github.com/BeechatNetworkSystemsLtd/Reticulum-rs", rev = "bbb09ed7a8b6ead454737bd63671cb2f8be65e70" }
 kaonic-vpn       = { path = "../kaonic-vpn", features = ["run"] }
 axum             = { version = "0.8", features = ["ws"] }
 axum-server      = { version = "0.7", features = ["tls-rustls"] }

@@ -30,7 +30,7 @@ The diagnostic records are volatile. They are cleared when diagnostics are disab
 
 ## Network-wide control channel
 
-Each plugin creates a Reticulum diagnostic control destination named:
+No diagnostic Reticulum destination is created during ordinary bridge operation. When the explicit trusted-test mesh override is enabled, each participating plugin creates a Reticulum diagnostic control destination named:
 
 ```text
 kaonic.atak.diag.control
@@ -39,6 +39,8 @@ kaonic.atak.diag.control
 Unauthenticated mesh control is disabled by default. When it is explicitly enabled for a trusted test mesh, nodes advertise and discover this destination separately from the ATAK data channels. A local enable or disable request creates a small versioned diagnostic command and relays it through discovered diagnostic control links. Each node applies each command identifier once and forwards a new command once so commands can propagate through a multi-node topology without looping indefinitely.
 
 Propagation is best-effort. A node that joins after an enable or disable command has already traversed the mesh does not receive the current state until another local control command is issued. Operational use should replace this with an authenticated management protocol that also supports state synchronization.
+
+The pinned Reticulum dependency exposes identity signing and verification primitives, but this bridge does not yet implement an application-level signed management-command format or trusted-controller allowlist. Network-wide diagnostics are therefore unsupported for operational or mixed-trust deployments.
 
 Supported actions are:
 
@@ -61,25 +63,27 @@ KAONIC_ATAK_ENABLE_UNAUTHENTICATED_DIAGNOSTICS_MESH_CONTROL=true
 
 ## Local control socket
 
-The plugin listens on the local loopback UDP control address by default:
+The plugin listens on a local Unix datagram socket by default:
 
 ```text
-127.0.0.1:19001
+/run/kaonic-atak-plugin/diagnostics.sock
 ```
 
-The address can be changed with:
+The path can be changed with:
 
 ```bash
-kaonic-atak-plugin --diagnostics-control-listen 127.0.0.1:19001
+kaonic-atak-plugin --diagnostics-unix-socket /run/kaonic-atak-plugin/diagnostics.sock
 ```
 
 or:
 
 ```bash
-KAONIC_ATAK_DIAGNOSTICS_CONTROL_LISTEN=127.0.0.1:19001
+KAONIC_ATAK_DIAGNOSTICS_UNIX_SOCKET=/run/kaonic-atak-plugin/diagnostics.sock
 ```
 
-The loopback socket is the intended integration point for a later diagnostics plugin. Local command messages are UTF-8 text:
+The packaged systemd unit creates the runtime directory and the plugin sets the socket mode to `0600`. This socket is the intended integration point for a later diagnostics plugin. UDP loopback control is available only when explicitly configured with `KAONIC_ATAK_DIAGNOSTICS_CONTROL_LISTEN=127.0.0.1:19001`.
+
+Local command messages are UTF-8 text:
 
 | Command | Meaning |
 | --- | --- |
@@ -90,13 +94,20 @@ The loopback socket is the intended integration point for a later diagnostics pl
 | `recent` | Return the most recent ten local diagnostic records. |
 | `recent <1-20>` | Return up to the requested number of recent records. |
 
-Example using netcat on a Kaonic node:
+Example using Python on a Kaonic node:
 
 ```bash
-printf 'enable 900\n' | nc -u -w1 127.0.0.1 19001
-printf 'status\n' | nc -u -w1 127.0.0.1 19001
-printf 'recent 10\n' | nc -u -w1 127.0.0.1 19001
-printf 'disable\n' | nc -u -w1 127.0.0.1 19001
+python3 - <<'PY'
+import os, socket, tempfile
+server = "/run/kaonic-atak-plugin/diagnostics.sock"
+client = tempfile.mktemp(prefix="kaonic-atak-diag-", suffix=".sock")
+sock = socket.socket(socket.AF_UNIX, socket.SOCK_DGRAM)
+sock.bind(client)
+sock.sendto(b"status\n", server)
+print(sock.recv(4096).decode(), end="")
+sock.close()
+os.unlink(client)
+PY
 ```
 
 A status reply has the form:
@@ -113,11 +124,11 @@ RECORD unix_ms=<time> peer=<hash> port=<port> uid=<uid> callsign=<callsign> type
 
 ## Security boundary
 
-This first control-plane implementation is designed for a trusted test mesh. It uses a loopback-only local control endpoint by default. When the explicit mesh-control override is enabled, it also uses Reticulum diagnostic links, but it does not yet add application-level signed authorization for network enable/disable commands.
+This first control-plane implementation is designed for local diagnostics and trusted bench testing. It uses a restrictive Unix local control endpoint by default. When the explicit mesh-control override is enabled, it also uses Reticulum diagnostic links, but it does not yet add application-level signed authorization for network enable/disable commands.
 
 Before operational use on a network where an untrusted Kaonic could participate, the diagnostics plugin should add an authorization layer, such as signed control commands accepted only from a designated management identity.
 
-The service refuses non-loopback local-control bindings unless an explicit insecure override is supplied:
+The service refuses non-loopback UDP local-control bindings unless an explicit insecure override is supplied:
 
 ```bash
 kaonic-atak-plugin \
@@ -137,7 +148,7 @@ Do not use that override unless remote local-network control is explicitly inten
 
 A future diagnostics plugin should use this control plane rather than changing ATAK/CoT data messages. Its first responsibilities can be:
 
-1. Send `enable`, `disable`, and `status` requests to the local loopback interface.
+1. Send `enable`, `disable`, and `status` requests to the local Unix diagnostics socket.
 2. Poll or subscribe to the diagnostic record output and display peer-to-ATAK associations.
 3. Add authorization for management commands before broader deployment.
 4. Optionally persist selected observations or export link-health metrics.

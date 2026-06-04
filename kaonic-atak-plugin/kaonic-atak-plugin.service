@@ -7,6 +7,9 @@ Wants=network-online.target
 Type=simple
 Environment="KAONIC_GATEWAY_DB_PATH=/kaonic-gateway.db"
 ExecStart=/usr/bin/kaonic-atak-plugin --rns-module 0
+RuntimeDirectory=kaonic-atak-plugin
+RuntimeDirectoryMode=0750
+UMask=0077
 Restart=always
 RestartSec=3
 StandardOutput=journal

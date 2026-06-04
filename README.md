@@ -6,7 +6,7 @@ This is a network bridge for a Kaonic device. It is not an Android ATAK plugin, 
 
 ## Status
 
-The plugin has an implementation baseline for validated CoT forwarding, location parsing, interface-isolated multicast output, and an opt-in diagnostic peer-hash control plane intended for future diagnostics-plugin integration. It still requires build verification and testing on physical Kaonic and ATAK hardware before deployment.
+The plugin has a locally verified implementation baseline for validated CoT forwarding, location parsing, interface-isolated multicast output, and an opt-in diagnostic peer-hash control plane intended for future diagnostics-plugin integration. It still requires testing on physical Kaonic and ATAK hardware before deployment.
 
 ## Supported traffic
 
@@ -19,8 +19,8 @@ The plugin has an implementation baseline for validated CoT forwarding, location
 
 - Forwards validated ATAK CoT traffic between the local ATAK network and Reticulum.
 - Reads location-bearing CoT messages for local position tracking without modifying the transmitted packet bytes.
-- Supports dormant-by-default diagnostic tracking that can temporarily record `Reticulum peer hash -> CoT UID/callsign/event` associations, with unauthenticated mesh-wide propagation available only through an explicit trusted-test override.
-- Exposes a loopback-only local diagnostics command interface for later integration by a dedicated diagnostics plugin.
+- Supports dormant-by-default diagnostic tracking that can temporarily record `Reticulum peer hash -> CoT UID/callsign/event` associations, with mesh-wide propagation isolated behind an explicit trusted-test override.
+- Exposes a restrictive local Unix diagnostics socket for later integration by a dedicated diagnostics plugin; UDP compatibility control is disabled unless explicitly configured.
 - Sends multicast traffic only on the selected ATAK-facing interface.
 - Fails closed when it cannot safely identify that interface.
 - Does not access USB, UART, GPS receivers, drones, cameras, or other attached peripherals.

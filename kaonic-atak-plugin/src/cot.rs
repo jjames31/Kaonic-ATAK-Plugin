@@ -5,6 +5,9 @@ use std::time::{Duration, SystemTime};
 
 const DEFAULT_MAX_LOCATION_RECORDS: usize = 512;
 const DEFAULT_RECORD_RETENTION: Duration = Duration::from_secs(60 * 60);
+const MAX_COT_UID_LEN: usize = 128;
+const MAX_COT_EVENT_TYPE_LEN: usize = 96;
+const MAX_COT_OPTIONAL_ATTR_LEN: usize = 128;
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct CotPoint {
@@ -33,6 +36,7 @@ pub enum CotParseError {
     Xml(String),
     WrongRoot,
     MissingAttribute(&'static str),
+    AttributeTooLong(&'static str),
     InvalidNumber(&'static str),
     InvalidCoordinate(&'static str),
 }
@@ -44,6 +48,9 @@ impl fmt::Display for CotParseError {
             Self::Xml(err) => write!(f, "invalid XML: {err}"),
             Self::WrongRoot => write!(f, "root element is not CoT event"),
             Self::MissingAttribute(attr) => write!(f, "missing CoT attribute {attr}"),
+            Self::AttributeTooLong(attr) => {
+                write!(f, "CoT attribute {attr} exceeds maximum length")
+            }
             Self::InvalidNumber(attr) => write!(f, "invalid CoT numeric attribute {attr}"),
             Self::InvalidCoordinate(attr) => write!(f, "invalid CoT coordinate {attr}"),
         }
@@ -170,6 +177,8 @@ pub fn parse_cot_payload(payload: &[u8]) -> Result<CotEvent, CotParseError> {
     if event_type.is_empty() {
         return Err(CotParseError::MissingAttribute("type"));
     }
+    validate_attr_len("uid", uid, MAX_COT_UID_LEN)?;
+    validate_attr_len("type", event_type, MAX_COT_EVENT_TYPE_LEN)?;
 
     let point = event
         .children()
@@ -181,18 +190,49 @@ pub fn parse_cot_payload(payload: &[u8]) -> Result<CotEvent, CotParseError> {
         .descendants()
         .find(|node| node.is_element() && node.tag_name().name() == "contact")
         .and_then(|node| node.attribute("callsign"))
-        .map(str::to_string);
+        .map(|value| bounded_optional_attr("callsign", value))
+        .transpose()?;
+
+    let how = event
+        .attribute("how")
+        .map(|value| bounded_optional_attr("how", value))
+        .transpose()?;
+    let time = event
+        .attribute("time")
+        .map(|value| bounded_optional_attr("time", value))
+        .transpose()?;
+    let start = event
+        .attribute("start")
+        .map(|value| bounded_optional_attr("start", value))
+        .transpose()?;
+    let stale = event
+        .attribute("stale")
+        .map(|value| bounded_optional_attr("stale", value))
+        .transpose()?;
 
     Ok(CotEvent {
         uid: uid.to_string(),
         event_type: event_type.to_string(),
-        how: event.attribute("how").map(str::to_string),
+        how,
         callsign,
-        time: event.attribute("time").map(str::to_string),
-        start: event.attribute("start").map(str::to_string),
-        stale: event.attribute("stale").map(str::to_string),
+        time,
+        start,
+        stale,
         point,
     })
+}
+
+fn bounded_optional_attr(name: &'static str, value: &str) -> Result<String, CotParseError> {
+    validate_attr_len(name, value, MAX_COT_OPTIONAL_ATTR_LEN)?;
+    Ok(value.to_string())
+}
+
+fn validate_attr_len(name: &'static str, value: &str, max_len: usize) -> Result<(), CotParseError> {
+    if value.len() > max_len {
+        Err(CotParseError::AttributeTooLong(name))
+    } else {
+        Ok(())
+    }
 }
 
 fn parse_point(point: roxmltree::Node<'_, '_>) -> Result<CotPoint, CotParseError> {
@@ -312,6 +352,25 @@ mod tests {
         assert_eq!(
             parse_cot_payload(payload).unwrap_err(),
             CotParseError::InvalidCoordinate("lat")
+        );
+    }
+
+    #[test]
+    fn rejects_oversized_cot_identity_fields() {
+        let oversized_uid = "u".repeat(MAX_COT_UID_LEN + 1);
+        let payload = format!(r#"<event uid="{oversized_uid}" type="a-f-G"/>"#);
+        assert_eq!(
+            parse_cot_payload(payload.as_bytes()).unwrap_err(),
+            CotParseError::AttributeTooLong("uid")
+        );
+
+        let oversized_callsign = "c".repeat(MAX_COT_OPTIONAL_ATTR_LEN + 1);
+        let payload = format!(
+            r#"<event uid="synthetic" type="a-f-G"><detail><contact callsign="{oversized_callsign}"/></detail></event>"#
+        );
+        assert_eq!(
+            parse_cot_payload(payload.as_bytes()).unwrap_err(),
+            CotParseError::AttributeTooLong("callsign")
         );
     }
 

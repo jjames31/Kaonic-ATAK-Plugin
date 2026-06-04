@@ -70,25 +70,45 @@ Do not enable compatibility mode on a network where arbitrary devices may transm
 
 Diagnostic tracking is independent from ATAK forwarding. It is disabled by default and, when enabled, temporarily records the Reticulum peer hash associated with valid remote CoT events. ATAK messages are not altered.
 
-Each Kaonic plugin exposes a local loopback UDP control interface. The default local control address is:
+Each Kaonic plugin exposes a local Unix datagram control socket by default. The default local control path is:
 
 ```text
-127.0.0.1:19001
+/run/kaonic-atak-plugin/diagnostics.sock
 ```
 
 Override it with a command-line option:
 
 ```bash
-kaonic-atak-plugin --diagnostics-control-listen 127.0.0.1:19001
+kaonic-atak-plugin --diagnostics-unix-socket /run/kaonic-atak-plugin/diagnostics.sock
 ```
 
 or an environment variable:
 
 ```bash
+KAONIC_ATAK_DIAGNOSTICS_UNIX_SOCKET=/run/kaonic-atak-plugin/diagnostics.sock
+```
+
+The packaged service creates `/run/kaonic-atak-plugin` through systemd `RuntimeDirectory` and the plugin sets the socket mode to `0600`. A local diagnostics client must bind its own Unix datagram reply socket before sending a command.
+
+To run with no local diagnostics control endpoint at all, use:
+
+```bash
+kaonic-atak-plugin --disable-local-diagnostics-control
+```
+
+or:
+
+```bash
+KAONIC_ATAK_DISABLE_LOCAL_DIAGNOSTICS_CONTROL=true
+```
+
+UDP local diagnostics control is retained only as an explicit compatibility/test option:
+
+```bash
 KAONIC_ATAK_DIAGNOSTICS_CONTROL_LISTEN=127.0.0.1:19001
 ```
 
-The service refuses non-loopback diagnostics-control bindings by default. For a controlled test that intentionally exposes the local control socket, set an explicit insecure override:
+The service refuses non-loopback UDP diagnostics-control bindings by default. For a controlled test that intentionally exposes the UDP control socket, set an explicit insecure override:
 
 ```bash
 KAONIC_ATAK_ALLOW_INSECURE_DIAGNOSTICS_CONTROL_LISTEN=true
@@ -96,9 +116,15 @@ KAONIC_ATAK_ALLOW_INSECURE_DIAGNOSTICS_CONTROL_LISTEN=true
 
 Do not use this override unless local-network control is explicitly required and protected separately.
 
+Diagnostics control startup is optional by default. If the Unix socket or explicit UDP socket cannot be created, ATAK forwarding continues and the service logs that diagnostics control is unavailable. To make diagnostics control startup fatal for a validation run, set:
+
+```bash
+KAONIC_ATAK_REQUIRE_DIAGNOSTICS_CONTROL=true
+```
+
 ### Local commands
 
-A local CLI or a future diagnostics plugin can send the following UDP text commands to `127.0.0.1:19001`:
+A local CLI or a future diagnostics plugin can send the following UTF-8 text commands to the Unix diagnostics socket:
 
 | Command | Behavior |
 | --- | --- |
@@ -108,12 +134,20 @@ A local CLI or a future diagnostics plugin can send the following UDP text comma
 | `status` | Return local enable state and retained-record count. |
 | `recent [1-20]` | Return bounded recent peer-to-CoT records stored locally. |
 
-Example:
+Example using Python on a Kaonic:
 
 ```bash
-printf 'enable 900\n' | nc -u -w1 127.0.0.1 19001
-printf 'recent 10\n' | nc -u -w1 127.0.0.1 19001
-printf 'disable\n' | nc -u -w1 127.0.0.1 19001
+python3 - <<'PY'
+import os, socket, tempfile
+server = "/run/kaonic-atak-plugin/diagnostics.sock"
+client = tempfile.mktemp(prefix="kaonic-atak-diag-", suffix=".sock")
+sock = socket.socket(socket.AF_UNIX, socket.SOCK_DGRAM)
+sock.bind(client)
+sock.sendto(b"status\n", server)
+print(sock.recv(4096).decode(), end="")
+sock.close()
+os.unlink(client)
+PY
 ```
 
 Unauthenticated network-wide enable/disable propagation is disabled by default. For a trusted bench mesh, enable it explicitly:
@@ -122,7 +156,7 @@ Unauthenticated network-wide enable/disable propagation is disabled by default. 
 KAONIC_ATAK_ENABLE_UNAUTHENTICATED_DIAGNOSTICS_MESH_CONTROL=true
 ```
 
-This control channel is currently intended for trusted development/test meshes. It should be extended with signed management authorization before operational deployment with untrusted nodes. See [Diagnostic Peer-Hash Tracking](Diagnostics.md) for the data boundary and future plugin integration plan.
+This control channel is currently intended for trusted development/test meshes only. Operational mesh diagnostics remain unsupported until signed management authorization and state synchronization are implemented. See [Diagnostic Peer-Hash Tracking](Diagnostics.md) for the data boundary and future plugin integration plan.
 
 ## Service configuration
 
@@ -138,10 +172,16 @@ For deployments where automatic selection is not appropriate, add an interface a
 Environment="KAONIC_ATAK_INTERFACE_IP=192.168.10.1"
 ```
 
-To select a non-default loopback diagnostics-control port, add:
+To enable the compatibility loopback UDP diagnostics-control port, add:
 
 ```ini
 Environment="KAONIC_ATAK_DIAGNOSTICS_CONTROL_LISTEN=127.0.0.1:19001"
+```
+
+To select a non-default Unix diagnostics socket path, add:
+
+```ini
+Environment="KAONIC_ATAK_DIAGNOSTICS_UNIX_SOCKET=/run/kaonic-atak-plugin/diagnostics.sock"
 ```
 
 To enable unauthenticated diagnostics propagation for a trusted bench mesh only, add:

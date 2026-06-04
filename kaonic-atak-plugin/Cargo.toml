@@ -3,6 +3,7 @@ name = "kaonic-atak-plugin"
 version = "0.1.1"
 authors = ["jjames31"]
 edition = "2021"
+publish = false
 
 [[bin]]
 name = "kaonic-atak-plugin"
@@ -10,7 +11,7 @@ path = "src/main.rs"
 
 [dependencies]
 kaonic-gateway = { path = "../kaonic-gateway" }
-reticulum = { git = "https://github.com/BeechatNetworkSystemsLtd/Reticulum-rs", branch = "fix/add-timer-configs" }
+reticulum = { git = "https://github.com/BeechatNetworkSystemsLtd/Reticulum-rs", rev = "bbb09ed7a8b6ead454737bd63671cb2f8be65e70" }
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "net", "signal", "time", "sync"] }
 tokio-util = "0.7"
 socket2 = { version = "0.5", features = ["all"] }
