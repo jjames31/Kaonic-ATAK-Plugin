@@ -120,6 +120,15 @@ The service file sets the gateway database location used on the Kaonic image:
 Environment="KAONIC_GATEWAY_DB_PATH=/kaonic-gateway.db"
 ```
 
+It also enables journal logging for connection setup, Reticulum peer/link activity, packet validation decisions, and transport errors:
+
+```ini
+Environment="RUST_LOG=info,kaonic_atak_plugin=debug,kaonic_gateway=info,kaonic_reticulum=info,kaonic_ctrl=info,reticulum=info"
+SyslogIdentifier=kaonic-atak-plugin
+StandardOutput=journal
+StandardError=journal
+```
+
 For deployments where automatic selection is not appropriate, add an interface address override to the installed service configuration before starting the plugin:
 
 ```ini
@@ -137,6 +146,36 @@ Then reload systemd and restart the service:
 ```bash
 systemctl daemon-reload
 systemctl restart kaonic-atak-plugin
+```
+
+## Viewing status while SSHed into the Kaonic
+
+Follow the plugin log live while conducting an ATAK test:
+
+```bash
+journalctl -fu kaonic-atak-plugin.service -o cat
+```
+
+The live log should show the selected ATAK-facing interface, Reticulum peer discovery and link activation or closure, forwarded or rejected CoT activity, diagnostics activity when enabled, keepalive failures, multicast socket errors, and radio/controller startup failures.
+
+For the current boot only, with timestamps:
+
+```bash
+journalctl -u kaonic-atak-plugin.service -b --no-pager
+```
+
+To quickly check whether the replacement bridge is running and the default bridge remains off:
+
+```bash
+systemctl --no-pager status kaonic-atak-plugin.service
+systemctl is-active kaonic-atak-bridge.service
+```
+
+During controlled multi-Kaonic troubleshooting, peer-to-callsign correlation can be temporarily enabled and queried from the same SSH session:
+
+```bash
+printf 'enable 900\n' | nc -u -w1 127.0.0.1 19001
+printf 'recent 10\n' | nc -u -w1 127.0.0.1 19001
 ```
 
 ## Relevant multicast channels
