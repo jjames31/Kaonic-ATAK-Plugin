@@ -1,6 +1,6 @@
 [package]
 name = "kaonic-atak-plugin"
-version = "0.1.1"
+version = "0.1.2"
 authors = ["jjames31"]
 edition = "2021"
 publish = false
