@@ -2,12 +2,12 @@
 
 This log summarizes the packaged Kaonic ATAK Plugin builds. It focuses on operator-visible behavior, packaging status, and validation notes rather than every internal commit.
 
-## v0.1.1-hardened
+## v0.1.2
 
-Current hardened package:
+Current package:
 
 ```text
-Builds/KATAK-v0.1.1-hardened.zip
+Builds/KATAK-v0.1.2.zip
 ```
 
 This build continues from v0.1.1 and hardens the diagnostic control and deployment boundary for controlled two-Kaonic bench testing.
