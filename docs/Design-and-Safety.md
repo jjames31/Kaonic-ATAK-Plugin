@@ -45,6 +45,21 @@ Valid CoT packets that do not include a location remain eligible for forwarding;
 
 The plugin maintains separate recent-location records for local packets sent into the mesh and remote packets received from the mesh. The state is bounded and old entries are pruned so the service does not grow memory usage indefinitely.
 
+## Diagnostic peer-hash control plane
+
+A Reticulum peer hash identifies the radio/plugin endpoint that delivered a message; it does not replace the ATAK UID or callsign that identifies the reported track. For troubleshooting, the plugin contains an optional diagnostic control plane that can temporarily record the association between a remote peer hash and valid received CoT event metadata.
+
+Diagnostic tracking has these boundaries:
+
+- disabled by default;
+- enabled or disabled across participating plugin nodes through the separate `kaonic.atak.diag.control` Reticulum destination;
+- bounded by an automatic enable timeout and an in-memory record limit;
+- records remote peer hash, CoT UID/callsign/type, channel port, and optional point only while enabled;
+- never modifies the ATAK packet bytes sent to the connected ATAK device;
+- exposes local control and recent-record access on a loopback UDP socket for use by a future diagnostics plugin.
+
+The first implementation is intended for trusted development/test meshes. It does not yet provide application-level signed authorization of network-wide diagnostic commands. A later diagnostics plugin should add authorization before enabling this functionality in a mesh that may contain untrusted participants. See [Diagnostic Peer-Hash Tracking](Diagnostics.md) for the control protocol and integration point.
+
 ## Safety boundaries
 
 This version is deliberately network-only. It does not probe, configure, or communicate with attached peripherals such as:
@@ -63,6 +78,8 @@ Connecting unrelated hardware to a Kaonic does not make it a data source for thi
 The plugin sends ATAK multicast traffic only on one selected local interface. It does not rebroadcast remote packets over every network interface on the Kaonic.
 
 When no interface is explicitly configured, automatic selection succeeds only when exactly one suitable address exists on the expected `192.168.10.0/24` local ATAK network. If there is no match or more than one match, the service refuses to start rather than choosing an unrelated network.
+
+The diagnostic local-control endpoint binds to loopback by default. Exposing it beyond the local host is not recommended without a separate access-control design.
 
 ## Forwarding policy
 

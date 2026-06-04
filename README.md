@@ -6,7 +6,7 @@ This is a network bridge for a Kaonic device. It is not an Android ATAK plugin, 
 
 ## Status
 
-The plugin has an implementation baseline for validated CoT forwarding, location parsing, and interface-isolated multicast output. It still requires build verification and testing on physical Kaonic and ATAK hardware before deployment.
+The plugin has an implementation baseline for validated CoT forwarding, location parsing, interface-isolated multicast output, and an opt-in diagnostic peer-hash control plane intended for future diagnostics-plugin integration. It still requires build verification and testing on physical Kaonic and ATAK hardware before deployment.
 
 ## Supported traffic
 
@@ -19,6 +19,8 @@ The plugin has an implementation baseline for validated CoT forwarding, location
 
 - Forwards validated ATAK CoT traffic between the local ATAK network and Reticulum.
 - Reads location-bearing CoT messages for local position tracking without modifying the transmitted packet bytes.
+- Supports a dormant-by-default diagnostic control channel that can temporarily record `Reticulum peer hash -> CoT UID/callsign/event` associations across participating plugin nodes.
+- Exposes a loopback-only local diagnostics command interface for later integration by a dedicated diagnostics plugin.
 - Sends multicast traffic only on the selected ATAK-facing interface.
 - Fails closed when it cannot safely identify that interface.
 - Does not access USB, UART, GPS receivers, drones, cameras, or other attached peripherals.
@@ -29,6 +31,7 @@ The plugin has an implementation baseline for validated CoT forwarding, location
 - [Documentation home](docs/Home.md)
 - [Design and safety](docs/Design-and-Safety.md)
 - [Configuration](docs/Configuration.md)
+- [Diagnostic peer-hash tracking](docs/Diagnostics.md)
 - [Build and install](docs/Build-and-Install.md)
 - [Testing](docs/Testing.md)
 
