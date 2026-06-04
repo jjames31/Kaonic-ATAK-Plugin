@@ -10,9 +10,11 @@ Forwarding ATAK traffic over a radio mesh is the starting point. When working wi
 
 This implementation follows the Kaonic ATAK bridge pattern for CoT and GeoChat transport, while adding diagnostic and safety features around that path. Normal ATAK CoT packets are forwarded without rewriting their contents, so ATAK remains responsible for positions, callsigns, chat, markers, and other supported CoT behavior.
 
+Because it performs the same ATAK-to-Reticulum bridge role, this plugin is intended to replace the default `kaonic-atak-bridge.service`, not run alongside it. When this plugin service is started, its systemd unit conflicts with and disables the default bridge to avoid duplicate forwarded packets and competing multicast bridges.
+
 ## Status
 
-The plugin has an implementation baseline for validated CoT forwarding, location parsing, interface-isolated multicast output, and an opt-in diagnostic peer-hash control plane intended for future diagnostics-plugin integration. It still requires build verification and testing on physical Kaonic and ATAK hardware before deployment.
+The plugin has an implementation baseline for validated CoT forwarding, location parsing, interface-isolated multicast output, default bridge replacement, and an opt-in diagnostic peer-hash control plane intended for future diagnostics-plugin integration. It still requires build verification and testing on physical Kaonic and ATAK hardware before deployment.
 
 ## Supported traffic
 
@@ -32,6 +34,7 @@ The plugin has an implementation baseline for validated CoT forwarding, location
 
 | Addition | Why it matters |
 | --- | --- |
+| Replaces the default ATAK bridge service | The custom bridge conflicts with and disables `kaonic-atak-bridge.service` when started, preventing two services from handling the same ATAK multicast channels at the same time. |
 | CoT validation before forwarding | Malformed or unrelated local UDP data is dropped by default instead of consuming radio bandwidth. An explicit compatibility option is available when opaque forwarding is required for testing. |
 | Location-aware parsing | The service can read UID, callsign, event type, position, accuracy, altitude, and stale/time metadata from valid CoT events without changing what ATAK receives. This makes later diagnostics possible without inventing a separate position protocol. |
 | Bounded local and remote location state | Recent location observations can be inspected during development without allowing the service's memory usage to grow indefinitely. |
@@ -66,7 +69,7 @@ deploy/kaonic-atak-plugin/kaonic-atak-plugin.zip
 
 ## Reference implementation
 
-Beechat's `kaonic-atak-bridge` in `kaonic-gateway` is used as an upstream reference for Kaonic transport and packaging patterns. This repository keeps that transport role, then adds the validation, interface isolation, and diagnostic hooks needed for this project's testing and future tools.
+Beechat's `kaonic-atak-bridge` in `kaonic-gateway` is used as an upstream reference for Kaonic transport and packaging patterns. This repository keeps that transport role, then adds the validation, interface isolation, diagnostic hooks, and service replacement behavior needed for this project's testing and future tools.
 
 ## Download
 
