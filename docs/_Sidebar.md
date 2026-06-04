@@ -5,3 +5,4 @@
 - [Configuration](Configuration.md)
 - [Build and Install](Build-and-Install.md)
 - [Testing](Testing.md)
+- [Change Log](Change-Log.md)

@@ -8,14 +8,14 @@ The Kaonic ATAK Plugin is a Kaonic-side service that carries ATAK Cursor-on-Targ
 - [Configuration](Configuration.md) — interface selection, safe mode, compatibility mode, and service configuration.
 - [Build and install](Build-and-Install.md) — building the ARMv7 binary and packaging a Kaonic plugin ZIP.
 - [Testing](Testing.md) — local validation and two-Kaonic end-to-end testing.
+- [Change log](Change-Log.md) — packaged release notes and validation status.
 
 ## Project status
 
-The repository contains an implementation baseline for validated ATAK traffic bridging and CoT location tracking. The safety-related code has been updated to fail closed when an ATAK-facing network interface cannot be selected unambiguously.
+The repository contains an implementation baseline for validated ATAK traffic bridging and CoT location tracking. The v0.1.1 package has local build and package verification for the Kaonic ARMv7 target, and the safety-related code fails closed when an ATAK-facing network interface cannot be selected unambiguously.
 
-The custom plugin still needs hardware validation before deployment:
+The custom plugin still needs hardware validation before operational deployment:
 
-- build and package verification for the Kaonic ARMv7 target;
 - installation and startup testing on the current Kaonic image;
 - real ATAK phone ingress testing;
 - two-Kaonic radio delivery testing.
